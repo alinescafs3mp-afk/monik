@@ -1,0 +1,69 @@
+{
+  "usage": {
+    "unique_records": 4,
+    "duplicate_deliveries": 1,
+    "conflicts": 0,
+    "by_profile": {
+      "astra": {
+        "input_tokens": 1800,
+        "cached_input_tokens": 1100,
+        "uncached_input_tokens": 700,
+        "output_tokens": 180,
+        "reasoning_output_tokens": 55,
+        "total_tokens": 1980
+      },
+      "sol": {
+        "input_tokens": 2000,
+        "cached_input_tokens": 1500,
+        "uncached_input_tokens": 500,
+        "output_tokens": 200,
+        "reasoning_output_tokens": 50,
+        "total_tokens": 2200
+      }
+    },
+    "combined": {
+      "input_tokens": 3800,
+      "cached_input_tokens": 2600,
+      "uncached_input_tokens": 1200,
+      "output_tokens": 380,
+      "reasoning_output_tokens": 105,
+      "total_tokens": 4180
+    }
+  },
+  "cumulative": {
+    "known_positive_delta": 750,
+    "baselines": 2,
+    "repeats": 1,
+    "negative_changes": 1
+  },
+  "incomplete_jsonl": {
+    "valid_records": 1,
+    "incomplete_records": 1
+  },
+  "rotation": {
+    "delivered_records": 4,
+    "unique_item_ids": 3,
+    "duplicates": 1
+  },
+  "lifecycle": {
+    "root": "ASTRA_ROOT_001",
+    "child": "ASTRA_CHILD_001",
+    "grandchild": "ASTRA_GRANDCHILD_001",
+    "all_closed": true
+  },
+  "rate_limits": {
+    "astra_used_sequence": [
+      0.0,
+      22.0,
+      23.0,
+      0.0,
+      1.0
+    ],
+    "sol_used_sequence": [
+      10.0,
+      23.0,
+      24.0
+    ],
+    "do_not_sum_drops": true
+  }
+}

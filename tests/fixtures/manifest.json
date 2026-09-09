@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-09T19:30:00Z",
+  "global_sanitization": {
+    "identifiers": "consistent synthetic aliases; no reverse map exists",
+    "texts": "new harmless Russian fixture text",
+    "timestamps": "safe retained rate observations or synthetic fixed UTC",
+    "secrets": "none included"
+  },
+  "fixtures": [
+    {
+      "file": "astra_rollout.jsonl",
+      "provenance": "synthetic_from_confirmed_0.153.4_rollout_schema",
+      "required_fields": [
+        "timestamp",
+        "ordinal",
+        "type",
+        "payload"
+      ],
+      "expected": "one turn, one tool pair, one usage record, settings and limit snapshot",
+      "limitations": "not byte-for-byte export; _fixture metadata is fixture-only where present",
+      "sanitization": "all identifiers/text/paths synthetic"
+    },
+    {
+      "file": "sol_rollout.jsonl",
+      "provenance": "synthetic_from_confirmed_0.153.4_rollout_schema",
+      "required_fields": [
+        "timestamp",
+        "ordinal",
+        "type",
+        "payload"
+      ],
+      "expected": "one turn, reasoning summary, one usage record",
+      "limitations": "encrypted content replaced with explicit opaque marker",
+      "sanitization": "all identifiers/text/paths synthetic"
+    },
+    {
+      "file": "usage_deliveries.jsonl",
+      "provenance": "synthetic_normalized_contract",
+      "required_fields": [
+        "profile",
+        "thread_id",
+        "response_id",
+        "usage",
+        "counter_epoch",
+        "source"
+      ],
+      "expected": "dedupe same response across two provenances without text matching",
+      "limitations": "normalized proposal, not raw Codex record",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "cumulative_snapshots.jsonl",
+      "provenance": "synthetic_edge_cases",
+      "required_fields": [
+        "profile",
+        "thread_id",
+        "counter_epoch",
+        "at",
+        "value"
+      ],
+      "expected": "baseline, +500, repeat, negative anomaly, new baseline, +250",
+      "limitations": "normalized proposal",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "rate_limits_real_sanitized.jsonl",
+      "provenance": "real_sanitized_projection_from_root_rollouts",
+      "required_fields": [
+        "timestamp",
+        "payload.rate_limits.limit_id",
+        "payload.rate_limits.primary.used_percent",
+        "payload.rate_limits.primary.resets_at"
+      ],
+      "expected": "preserve nonmonotonic snapshots and changed resetsAt; no causal claim",
+      "limitations": "bounded selected sequence, not full account history",
+      "sanitization": "thread/account identifiers removed; numeric values/times retained"
+    },
+    {
+      "file": "app_server_rate_limits_response.json",
+      "provenance": "synthetic_from_installed_v2_schema",
+      "required_fields": [
+        "rateLimits",
+        "rateLimitsByLimitId"
+      ],
+      "expected": "legacy and map representation not double counted",
+      "limitations": "runtime response not captured",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "lifecycle_events.jsonl",
+      "provenance": "synthetic_from_confirmed_lifecycle_event_schema",
+      "required_fields": [
+        "assignment",
+        "at",
+        "event_id",
+        "kind",
+        "profile"
+      ],
+      "expected": "root-child-grandchild and cleanup transitions",
+      "limitations": "combined scenario did not occur as a new live probe",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "lifecycle_registry.json",
+      "provenance": "synthetic_from_confirmed_registry_schema",
+      "required_fields": [
+        "assignments",
+        "profile",
+        "updated_at"
+      ],
+      "expected": "two closed generations and tree edges",
+      "limitations": "minimal field subset",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "rotation_before.jsonl",
+      "provenance": "synthetic_edge_case",
+      "required_fields": [
+        "payload.id"
+      ],
+      "expected": "boundary item also appears in next source epoch",
+      "limitations": "rotation mechanics simulated",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "rotation_after.jsonl",
+      "provenance": "synthetic_edge_case",
+      "required_fields": [
+        "payload.id"
+      ],
+      "expected": "stable item id dedupes overlap",
+      "limitations": "rotation mechanics simulated",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "incomplete_last_line.jsonl",
+      "provenance": "synthetic_from_observed_live_boundary_condition",
+      "required_fields": [
+        "one valid line then partial JSON"
+      ],
+      "expected": "one accepted, one pending/incomplete; no silent data loss",
+      "limitations": "intentionally invalid JSONL tail",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "unknown_and_large_output.jsonl",
+      "provenance": "synthetic_forward_compatibility",
+      "required_fields": [
+        "payload.type",
+        "payload.id"
+      ],
+      "expected": "unknown kind retained raw-safe; large output remains paged/truncated marker",
+      "limitations": "does not allocate a real large output",
+      "sanitization": "synthetic"
+    },
+    {
+      "file": "expected_aggregates.json",
+      "provenance": "hand_calculated_fixture_oracle",
+      "required_fields": [
+        "usage",
+        "cumulative",
+        "rotation",
+        "lifecycle",
+        "rate_limits"
+      ],
+      "expected": "fixture_validator exact match",
+      "limitations": "fixture scope only",
+      "sanitization": "synthetic"
+    }
+  ]
+}

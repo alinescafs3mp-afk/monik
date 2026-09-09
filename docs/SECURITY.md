@@ -1,0 +1,35 @@
+# Границы доверия
+
+## Источники не являются управляющим каналом
+
+Rollout, результаты инструментов, lifecycle и Sol-link считаются недоверенными данными. Текст не исполняется, не интерпретируется как Python/JavaScript/SQL и не используется для выбора HTTP-маршрута. Веб-интерфейс не имеет произвольного чтения пути, исполнения команд, RPC или изменения source/config. Path и URL из payload отображаются как текст. Markdown не становится HTML. Внешние изображения и CDN не используются.
+
+Владельцем считается локальный пользователь, который устанавливает код и редактирует собственную конфигурацию monik. Изменение этого кода или обход production-entrypoint владельцем не входит в модель защиты. `create_app()` используется тестами с исключительно синтетическими путями; запускать production через произвольный `uvicorn monik...` вместо `monik serve` нельзя: это пропускает обязательный файловый sandbox.
+
+## Разделение файлов
+
+`config.load()` запрещает пересечение data directory и разрешённых источников. `source_file()` открывает только обычные файлы O_RDONLY, проверяет canonical scope и /proc/self/fd. Ротация может временно дать missing/error, но не разрешение читать произвольное место. `auth.json` и компоненты `Pandora box` запрещены отдельно. Конфигурация профилей Codex и окружение процессов не читаются.
+
+`serve` требует обычного пользователя и Landlock ABI >= 3. До создания потоков устанавливаются `no_new_privs` и правило: handled filesystem mutations разрешены только внутри data directory monik. Расширения ABI за пределами использованных файловых прав не объявлены проверенными. Это не полный запрет чтения, сетевых соединений, сигналов, metadata operations или всех kernel side effects.
+
+SQLite `mode=ro`/`query_only` сами по себе не достаточны для универсального заявления о неизменности WAL/SHM. Поэтому production применяет файловую границу, source-транзакции короткие и соединения закрываются. Нет source checkpoint, VACUUM, PRAGMA journal_mode write, immutable-флага для живой БД, table repair или app-server fallback. Отсутствующие/непригодные sidecars дают недоступность адаптера, не ремонт источника. Реальная нейтральность к конкретному Codex проверяется отдельно O13, включая WAL/SHM.
+
+## HTTP
+
+Loopback по умолчанию. LAN требует TLS и один явный private IPv4. Вход по отдельному owner-token, constant-time сравнение хеша. Cookie HttpOnly, SameSite=Strict, Secure при TLS, 12 часов; session state только в памяти. Login/logout требуют совпадающий Origin. Есть ограничение размера запроса входа, частоты попыток, количества сессий и SSE-подключений. Restart обнуляет web-сессии, но не историю.
+
+API GET-only кроме login/logout. SQL-фильтры параметризованы, выборки ограничены и имеют execution budget. Содержимое выводится через textContent. CSP ограничивает ресурсы текущим origin; нет CORS allow-all, raw filesystem endpoint или доверия proxy headers. Access log отключён, ошибки ingestion журналируются без содержимого payload. Token не следует помещать в URL, Git, shell history literal, публичный лог или снимок экрана.
+
+## Секреты и резервные копии
+
+До записи удаляются opaque reasoning и известные credential fields, очищаются распространённые Bearer/JWT/API-key/password patterns. Это best-effort, а не DLP-гарантия: произвольный секрет в естественном тексте может остаться. БД/backup/экспорт считать приватными, защищать правами и при необходимости шифрованием диска. Экспорт ограничен страницей, но от этого не становится публичным.
+
+CA key, server key и owner-token остаются только на машине владельца. Для доверия устройства передаётся исключительно CA certificate `.crt`. Не открывать монитор в публичный интернет. Для firewall использовать минимальный разрешённый клиент/подсеть и проверенную маршрутизацию.
+
+## Первичные технические источники
+
+- SQLite WAL / read-only: https://www.sqlite.org/wal.html
+- SQLite URI `mode=ro`, immutable semantics: https://www.sqlite.org/uri.html
+- Linux Landlock ABI / permissions: https://docs.kernel.org/userspace-api/landlock.html
+
+Зафиксированные версии runtime проверены на PyPI и согласованы с установленными dependency metadata. Обновления безопасности зависимостей не выполняются в фоне; новую версию необходимо протестировать и обновить lock явно.

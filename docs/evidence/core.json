@@ -1,0 +1,163 @@
+{
+  "ok": true,
+  "run": 38,
+  "passed": 37,
+  "skipped": 1,
+  "checks": [
+    {
+      "name": "test_core.API.test_api_contract_and_detail",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.API.test_auth_csrf_and_cookie",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.API.test_lan_plaintext_config_rejected",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.API.test_logout_revokes_session",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.API.test_no_mutation_routes_or_paths",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.API.test_rate_limit_login",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.API.test_source_and_data_overlap_rejected",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_ambiguous_shared_file_not_attributed",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_asof_and_knowledge_no_future",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_atomic_cursor_on_own_storage_failure",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_backfill_late_completion_does_not_duplicate",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_backup_and_reopen",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_bad_line_unknown_schema_continue",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_conflicting_usage_first_canonical_preserved",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_cumulative_epochs_do_not_inflate_usage",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_event_pagination_uses_source_time_not_ingest_id",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_inode_rotation_and_overlap",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_invalid_usage_is_not_zero",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_landlock_absence_refuses_unsafe_fallback",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_large_output_is_bounded",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_legacy_rate_alias_not_double_counted",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_metadata_does_not_refresh_old_status",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_native_landlock_write_denial",
+      "status": "skip",
+      "reason": "Native Landlock syscalls unavailable in this container; fail-closed path is tested"
+    },
+    {
+      "name": "test_core.Local.test_offline_one_source_others_continue",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_oversize_gap_and_next_record_recovery",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_partial_then_complete_and_restart",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_path_scope_and_exclusions",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_rate_sequences_and_anomaly_evidence",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_redaction_and_hidden_reasoning",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_registry_designation_tracks_new_root",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_registry_snapshot_not_backdated",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_russian_code_id_and_path_search",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_same_inode_truncate_creates_gap",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_settings_model_change_and_no_hindsight_root",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_shared_symlink_once",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_state_root_graph_and_source_unchanged",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_two_profile_rollouts_remain_separate",
+      "status": "pass"
+    },
+    {
+      "name": "test_core.Local.test_usage_fixture_and_provenance",
+      "status": "pass"
+    }
+  ],
+  "python": "3.13.5",
+  "scope": "Isolated synthetic/source fixture tests. Production host TUI and native Landlock unsupported here, not claimed."
+}

@@ -1,0 +1,140 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "unauthenticated_http",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "login_cookie_http",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_0",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_0",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_1",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_1",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_2",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_2",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_3",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_3",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_4",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_4",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_5",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_5",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_6",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_6",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "sse_delivery_7",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "cursor_advance_7",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "local_wire_p95_under_2_seconds",
+      "ok": true,
+      "detail": [
+        0.29376365899997836,
+        0.2404330949998439,
+        0.24366839499998605,
+        0.24400937299969883,
+        0.24319391099970744,
+        0.2430227200002264,
+        0.24336685299977034,
+        0.2362720299997818
+      ]
+    },
+    {
+      "name": "fanout_same_ids",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "one_collector_for_clients",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "future_cursor_reset",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "http_method_boundary",
+      "ok": true,
+      "detail": null
+    }
+  ],
+  "append_to_sse_seconds": [
+    0.29376365899997836,
+    0.2404330949998439,
+    0.24366839499998605,
+    0.24400937299969883,
+    0.24319391099970744,
+    0.2430227200002264,
+    0.24336685299977034,
+    0.2362720299997818
+  ],
+  "measurement": "8 synthetic appends, pre-existing 3000-event history, loopback Python HTTP client, poll 0.2s; not a physical-device or production-TUI measurement"
+}

@@ -1,0 +1,208 @@
+{
+  "source": "pre-existing offline export from installed Codex 0.153.4",
+  "source_sha256": "d3eace08be5dca386bfd1f1e8df650058b4113f1e10870a284d775d75517576a",
+  "methods_present": {
+    "account/rateLimits/read": true,
+    "account/read": true,
+    "account/usage/read": true,
+    "hooks/list": true,
+    "initialize": true,
+    "thread/goal/get": true,
+    "thread/items/list": true,
+    "thread/list": true,
+    "thread/loaded/list": true,
+    "thread/read": true,
+    "thread/turns/list": true
+  },
+  "notifications_present": {
+    "account/rateLimits/updated": true,
+    "item/completed": true,
+    "item/started": true,
+    "thread/status/changed": true,
+    "thread/tokenUsage/updated": true,
+    "turn/completed": true,
+    "turn/started": true
+  },
+  "selected_definition_shapes": {
+    "GetAccountRateLimitsResponse": {
+      "description": null,
+      "properties": [
+        "accountId",
+        "rateLimitResetCredits",
+        "rateLimitUpsell",
+        "rateLimits",
+        "rateLimitsByLimitId"
+      ],
+      "required": [
+        "rateLimits"
+      ]
+    },
+    "GetAccountTokenUsageParams": {
+      "description": null,
+      "properties": [
+        "threadId"
+      ],
+      "required": []
+    },
+    "GetAccountTokenUsageResponse": {
+      "description": null,
+      "properties": [
+        "dailyUsageBuckets",
+        "summary",
+        "threadUsage"
+      ],
+      "required": [
+        "summary"
+      ]
+    },
+    "InitializeCapabilities": {
+      "description": "Client-declared capabilities negotiated during initialize.",
+      "properties": [
+        "experimentalApi",
+        "extensions",
+        "mcpServerOpenaiFormElicitation",
+        "optOutNotificationMethods",
+        "requestAttestation"
+      ],
+      "required": []
+    },
+    "InitializeParams": {
+      "description": null,
+      "properties": [
+        "capabilities",
+        "clientInfo"
+      ],
+      "required": [
+        "clientInfo"
+      ]
+    },
+    "RateLimitSnapshot": {
+      "description": null,
+      "properties": [
+        "credits",
+        "individualLimit",
+        "limitId",
+        "limitName",
+        "planType",
+        "primary",
+        "rateLimitReachedType",
+        "secondary",
+        "spendControlReached"
+      ],
+      "required": []
+    },
+    "RateLimitWindow": {
+      "description": null,
+      "properties": [
+        "resetsAt",
+        "usedPercent",
+        "windowDurationMins"
+      ],
+      "required": [
+        "usedPercent"
+      ]
+    },
+    "ThreadGoalGetParams": {
+      "description": null,
+      "properties": [
+        "threadId"
+      ],
+      "required": [
+        "threadId"
+      ]
+    },
+    "ThreadItemsListParams": {
+      "description": null,
+      "properties": [
+        "cursor",
+        "limit",
+        "sortDirection",
+        "threadId",
+        "turnId"
+      ],
+      "required": [
+        "threadId"
+      ]
+    },
+    "ThreadListParams": {
+      "description": null,
+      "properties": [
+        "archived",
+        "cursor",
+        "cwd",
+        "limit",
+        "modelProviders",
+        "searchTerm",
+        "sectionId",
+        "sortDirection",
+        "sortKey",
+        "sourceKinds",
+        "useStateDbOnly"
+      ],
+      "required": []
+    },
+    "ThreadLoadedListParams": {
+      "description": null,
+      "properties": [
+        "cursor",
+        "limit"
+      ],
+      "required": []
+    },
+    "ThreadReadParams": {
+      "description": null,
+      "properties": [
+        "includeTurns",
+        "threadId"
+      ],
+      "required": [
+        "threadId"
+      ]
+    },
+    "ThreadTokenUsageUpdatedNotification": {
+      "description": null,
+      "properties": [
+        "threadId",
+        "tokenUsage",
+        "turnId"
+      ],
+      "required": [
+        "threadId",
+        "tokenUsage",
+        "turnId"
+      ]
+    },
+    "ThreadTurnsListParams": {
+      "description": null,
+      "properties": [
+        "cursor",
+        "itemsView",
+        "limit",
+        "sortDirection",
+        "threadId"
+      ],
+      "required": [
+        "threadId"
+      ]
+    },
+    "TokenUsageBreakdown": {
+      "description": null,
+      "properties": [
+        "cacheWriteInputTokens",
+        "cachedInputTokens",
+        "inputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+        "totalTokens"
+      ],
+      "required": [
+        "cachedInputTokens",
+        "inputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+        "totalTokens"
+      ]
+    }
+  },
+  "runtime_calls_made": 0
+}

@@ -1,0 +1,191 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "overview_profiles",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "profile_select_options",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "width_360",
+      "ok": true,
+      "detail": {
+        "scroll": 360,
+        "width": 360
+      }
+    },
+    {
+      "name": "touch_360",
+      "ok": true,
+      "detail": 44
+    },
+    {
+      "name": "width_390",
+      "ok": true,
+      "detail": {
+        "scroll": 390,
+        "width": 390
+      }
+    },
+    {
+      "name": "touch_390",
+      "ok": true,
+      "detail": 44
+    },
+    {
+      "name": "width_412",
+      "ok": true,
+      "detail": {
+        "scroll": 412,
+        "width": 412
+      }
+    },
+    {
+      "name": "touch_412",
+      "ok": true,
+      "detail": 44
+    },
+    {
+      "name": "width_768",
+      "ok": true,
+      "detail": {
+        "scroll": 768,
+        "width": 768
+      }
+    },
+    {
+      "name": "touch_768",
+      "ok": true,
+      "detail": 44
+    },
+    {
+      "name": "width_1440",
+      "ok": true,
+      "detail": {
+        "scroll": 1440,
+        "width": 1440
+      }
+    },
+    {
+      "name": "touch_1440",
+      "ok": true,
+      "detail": 44
+    },
+    {
+      "name": "light_theme",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "tab_activity",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "mobile_activity",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "tab_tokens",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "mobile_tokens",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "tab_limits",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "mobile_limits",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "tab_tree",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "mobile_tree",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "tab_quality",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "mobile_quality",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "commit_updates_dom",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "xss_plain_text",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "history_scroll_pinned",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "historical_time_does_not_jump",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "notification_catchup_dom_once",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "detail_paging_ui",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "search_ui",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "comparison_ui",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "relogin_restores_live_stream",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "javascript_clean",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "single_collector",
+      "ok": true,
+      "detail": null
+    }
+  ],
+  "mode": "Offline DOM + real ASGI API bridge + EventSource stand-in. No browser network, no physical phone, no production Landlock validation."
+}

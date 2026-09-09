@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "profile": "astra",
+  "designated_root_thread_id": "ASTRA_ROOT_001",
+  "updated_at": "2026-09-09T11:03:00.000Z",
+  "assignments": {
+    "A-CHILD#1": {
+      "assignment_id": "A-CHILD",
+      "generation": "1",
+      "owner_thread_id": "ASTRA_ROOT_001",
+      "parent_thread_id": "ASTRA_ROOT_001",
+      "child_thread_id": "ASTRA_CHILD_001",
+      "state": "CLOSED",
+      "cleanup": {
+        "confirmed": true,
+        "tree": [
+          "ASTRA_CHILD_001",
+          "ASTRA_GRANDCHILD_001"
+        ]
+      }
+    },
+    "A-GRANDCHILD#1": {
+      "assignment_id": "A-GRANDCHILD",
+      "generation": "1",
+      "owner_thread_id": "ASTRA_CHILD_001",
+      "parent_thread_id": "ASTRA_CHILD_001",
+      "child_thread_id": "ASTRA_GRANDCHILD_001",
+      "state": "CLOSED",
+      "cleanup": {
+        "confirmed": true,
+        "tree": [
+          "ASTRA_GRANDCHILD_001"
+        ]
+      }
+    }
+  },
+  "pending_continuations": {},
+  "pending_tools": {}
+}

@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-09T13:00:00Z","ordinal":1,"type":"response_item","payload":{"type":"future_item_kind","id":"UNKNOWN_1","safe_unknown_field":{"v":1}}}
+{"timestamp":"2026-09-09T13:00:01Z","ordinal":2,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"BIG_OUT_1","call_id":"BIG_CALL_1","output":"[TRUNCATED SAFE FIXTURE]","output_metadata":{"original_bytes":10485760,"stored_bytes":24,"truncated":true}}}

@@ -1,0 +1,34 @@
+{
+  "rateLimits": {
+    "limitId": "codex",
+    "planType": "pro",
+    "primary": {
+      "usedPercent": 23.0,
+      "windowDurationMins": 10080,
+      "resetsAt": 1789380688
+    }
+  },
+  "rateLimitsByLimitId": {
+    "codex": {
+      "limitId": "codex",
+      "limitName": "Codex",
+      "planType": "pro",
+      "primary": {
+        "usedPercent": 23.0,
+        "windowDurationMins": 10080,
+        "resetsAt": 1789380688
+      }
+    },
+    "premium": {
+      "limitId": "premium",
+      "limitName": "Premium",
+      "planType": "pro",
+      "primary": null,
+      "secondary": null
+    }
+  },
+  "_fixture": {
+    "provenance": "synthetic_from_installed_v2_schema",
+    "warning": "legacy rateLimits and rateLimitsByLimitId.codex are two representations and must not be added"
+  }
+}

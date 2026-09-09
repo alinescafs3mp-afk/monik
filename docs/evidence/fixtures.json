@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "checks": [
+    {
+      "name": "usage.unique_records",
+      "ok": true,
+      "actual": 4,
+      "expected": 4
+    },
+    {
+      "name": "usage.duplicate_deliveries",
+      "ok": true,
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "name": "usage.conflicts",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "usage.by_profile",
+      "ok": true,
+      "actual": {
+        "astra": {
+          "input_tokens": 1800,
+          "cached_input_tokens": 1100,
+          "output_tokens": 180,
+          "reasoning_output_tokens": 55,
+          "total_tokens": 1980,
+          "uncached_input_tokens": 700
+        },
+        "sol": {
+          "input_tokens": 2000,
+          "cached_input_tokens": 1500,
+          "output_tokens": 200,
+          "reasoning_output_tokens": 50,
+          "total_tokens": 2200,
+          "uncached_input_tokens": 500
+        }
+      },
+      "expected": {
+        "astra": {
+          "input_tokens": 1800,
+          "cached_input_tokens": 1100,
+          "uncached_input_tokens": 700,
+          "output_tokens": 180,
+          "reasoning_output_tokens": 55,
+          "total_tokens": 1980
+        },
+        "sol": {
+          "input_tokens": 2000,
+          "cached_input_tokens": 1500,
+          "uncached_input_tokens": 500,
+          "output_tokens": 200,
+          "reasoning_output_tokens": 50,
+          "total_tokens": 2200
+        }
+      }
+    },
+    {
+      "name": "usage.combined",
+      "ok": true,
+      "actual": {
+        "input_tokens": 3800,
+        "cached_input_tokens": 2600,
+        "output_tokens": 380,
+        "reasoning_output_tokens": 105,
+        "total_tokens": 4180,
+        "uncached_input_tokens": 1200
+      },
+      "expected": {
+        "input_tokens": 3800,
+        "cached_input_tokens": 2600,
+        "uncached_input_tokens": 1200,
+        "output_tokens": 380,
+        "reasoning_output_tokens": 105,
+        "total_tokens": 4180
+      }
+    },
+    {
+      "name": "cumulative",
+      "ok": true,
+      "actual": {
+        "known_positive_delta": 750,
+        "baselines": 2,
+        "repeats": 1,
+        "negative_changes": 1
+      },
+      "expected": {
+        "known_positive_delta": 750,
+        "baselines": 2,
+        "repeats": 1,
+        "negative_changes": 1
+      }
+    },
+    {
+      "name": "incomplete_jsonl",
+      "ok": true,
+      "actual": {
+        "valid_records": 1,
+        "incomplete_records": 1
+      },
+      "expected": {
+        "valid_records": 1,
+        "incomplete_records": 1
+      }
+    },
+    {
+      "name": "rotation",
+      "ok": true,
+      "actual": {
+        "delivered_records": 4,
+        "unique_item_ids": 3,
+        "duplicates": 1
+      },
+      "expected": {
+        "delivered_records": 4,
+        "unique_item_ids": 3,
+        "duplicates": 1
+      }
+    },
+    {
+      "name": "lifecycle",
+      "ok": true,
+      "actual": {
+        "root": "ASTRA_ROOT_001",
+        "child": "ASTRA_CHILD_001",
+        "grandchild": "ASTRA_GRANDCHILD_001",
+        "all_closed": true
+      },
+      "expected": {
+        "root": "ASTRA_ROOT_001",
+        "child": "ASTRA_CHILD_001",
+        "grandchild": "ASTRA_GRANDCHILD_001",
+        "all_closed": true
+      }
+    },
+    {
+      "name": "rate_limits",
+      "ok": true,
+      "actual": {
+        "astra_used_sequence": [
+          0.0,
+          22.0,
+          23.0,
+          0.0,
+          1.0
+        ],
+        "sol_used_sequence": [
+          10.0,
+          23.0,
+          24.0
+        ],
+        "do_not_sum_drops": true
+      },
+      "expected": {
+        "astra_used_sequence": [
+          0.0,
+          22.0,
+          23.0,
+          0.0,
+          1.0
+        ],
+        "sol_used_sequence": [
+          10.0,
+          23.0,
+          24.0
+        ],
+        "do_not_sum_drops": true
+      }
+    },
+    {
+      "name": "other_fixture_parse_errors",
+      "ok": true,
+      "actual": [],
+      "expected": []
+    }
+  ],
+  "semantics": {
+    "cached_is_subset_of_input": true,
+    "reasoning_is_subset_of_output": true,
+    "dedupe_key": "profile,thread_id,response_id",
+    "text_is_never_a_dedupe_key": true,
+    "first_cumulative_value_is_baseline": true,
+    "negative_cumulative_change_is_not_clamped": true
+  }
+}

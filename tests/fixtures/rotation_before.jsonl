@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-09T12:00:00Z","ordinal":1,"type":"response_item","payload":{"type":"message","id":"ROT_MSG_1","role":"assistant","content":[{"type":"output_text","text":"До архива."}]}}
+{"timestamp":"2026-09-09T12:00:01Z","ordinal":2,"type":"response_item","payload":{"type":"message","id":"ROT_MSG_2","role":"assistant","content":[{"type":"output_text","text":"Граница."}]}}

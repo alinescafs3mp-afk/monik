@@ -1,0 +1,5 @@
+{"assignment":"A-CHILD#1","at":"2026-09-09T11:00:00.000Z","event_id":"LC-001","kind":"SPAWN_PREPARED","owner":"ASTRA_ROOT_001","profile":"astra","task_name":"child_review","contract_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}
+{"assignment":"A-CHILD#1","at":"2026-09-09T11:00:01.000Z","event_id":"LC-002","kind":"PRE_SPAWN","owner":"ASTRA_ROOT_001","profile":"astra","tool_use_id":"CALL_SYNTH_001"}
+{"assignment":"A-GRANDCHILD#1","at":"2026-09-09T11:01:00.000Z","event_id":"LC-003","kind":"SPAWN_PREPARED","owner":"ASTRA_CHILD_001","profile":"astra","task_name":"grandchild_check","contract_sha256":"1111111111111111111111111111111111111111111111111111111111111111"}
+{"assignment":"A-GRANDCHILD#1","at":"2026-09-09T11:02:00.000Z","event_id":"LC-004","kind":"CLEANUP_CONFIRMED","final_state":"CLOSED","profile":"astra","tree":["ASTRA_GRANDCHILD_001"]}
+{"assignment":"A-CHILD#1","at":"2026-09-09T11:03:00.000Z","event_id":"LC-005","kind":"CLEANUP_CONFIRMED","final_state":"CLOSED","profile":"astra","tree":["ASTRA_CHILD_001","ASTRA_GRANDCHILD_001"]}

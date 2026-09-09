@@ -1,0 +1,14 @@
+# Exact versions used in the isolated validation environment.
+fastapi==0.128.2
+starlette==0.50.0
+uvicorn==0.48.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+annotated-types==0.7.0
+annotated-doc==0.0.4
+typing-extensions==4.16.0
+typing-inspection==0.4.2
+anyio==4.13.0
+idna==3.17
+click==8.1.8
+h11==0.16.0
