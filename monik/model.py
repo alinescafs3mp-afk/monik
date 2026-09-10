@@ -10,9 +10,10 @@ from typing import Any
 FIELDS = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens')
 SENSITIVE = {'encrypted_content','authorization','cookie','set-cookie','password','passwd','access_token','refresh_token','id_token','api_key','secret','private_key','environment','env','headers'}
 PATTERNS = [
-    (r'-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----','[PRIVATE KEY REMOVED]'),
+    (r'-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)','[PRIVATE KEY REMOVED]'),
     (r'(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}','Bearer [REDACTED]'),
     (r'\bsk-[A-Za-z0-9_-]{12,}','[API KEY REMOVED]'),
+    (r'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})','[API KEY REMOVED]'),
     (r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}','[JWT REMOVED]'),
     (r'''(?i)((?:password|passwd|api[_-]?key|access[_-]?token|refresh[_-]?token|secret)\s*[=:]\s*["']?)[^\s"',;}]+''',r'\1[REDACTED]'),
     (r'(https?://[^\s/?#]+[^\s?#]*)\?[^\s\"<>]+',r'\1?[QUERY REDACTED]'),
@@ -55,7 +56,7 @@ def safe(value: Any, budget: int=131072) -> Any:
         if isinstance(v,dict):
             out={}
             for key,item in list(v.items())[:128]:
-                key=str(key)[:200]
+                key=redact(str(key))[:200]
                 out[key]='[REMOVED]' if key.lower() in SENSITIVE else visit(item,depth+1)
                 if min(left)<=0: out['_truncated']=True;break
             if len(v)>128: out['_truncated_keys']=len(v)-128
@@ -125,7 +126,16 @@ def normalize(row: dict,profile: str,thread: str,delivery: str,model: str|None=N
     out=[]
     def add(kind,data,native=None,text=None):
         clean=safe(data)
-        out.append({**base,'kind':kind,'data':clean,'native':str(native) if native else delivery+':'+kind,'text':redact(text if text is not None else text_content(clean))[:65536]})
+        # Derive both indexed text and display text from the same redacted projection.
+        # Otherwise structured secrets removed from data could survive in the FTS text.
+        shown = clean.get('content', []) if kind.startswith('message:') else clean
+        if kind == 'reasoning_summary': shown = clean.get('summary', [])
+        identity = str(native) if native else delivery+':'+kind
+        if len(identity) > 512: identity = 'sha256:'+digest(identity)
+        fields = {k:(v if not isinstance(v, str) or len(v)<=512 else 'sha256:'+digest(v)) for k,v in base.items()}
+        for field in ('turn_id','call_id','response_id','model'):
+            if fields.get(field) is not None and not isinstance(fields[field], str): fields[field]=None
+        out.append({**fields,'kind':kind,'data':clean,'native':identity,'text':text_content(shown)[:65536]})
     if outer=='token_usage_record' or ('usage' in row and 'response_id' in row):
         add('usage' if p.get('response_id') else 'unsupported_usage',usage(p.get('usage')) if p.get('response_id') else p,p.get('response_id'))
         if isinstance(p.get('thread_token_usage'),dict): add('cumulative',{'value':p['thread_token_usage'].get('total_tokens'),'counter_epoch':'thread'})
