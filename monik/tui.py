@@ -128,6 +128,14 @@ def render(page,data,width=100,selected=None):
     return wrapped
 
 
+def filter_overview(page, data, params):
+    """The overview API returns all cards; apply the requested display scope."""
+    profile=params.get('profile')
+    if page=='overview' and profile:
+        return {**data,'profiles':[card for card in data.get('profiles',[]) if card.get('profile')==profile]}
+    return data
+
+
 class Fetcher:
     """One bounded mailbox, no unbounded task queue or duplicate collectors."""
     def __init__(self,client):
@@ -152,7 +160,7 @@ class Fetcher:
             except queue.Empty: continue
             try:
                 resource='events/'+params.pop('_event') if page=='detail' else routes.get(page,page)
-                result=self.client.get(resource,params);error=None
+                result=filter_overview(page,self.client.get(resource,params),params);error=None
             except Exception as exc:
                 result=None;error=terminal_text(str(exc))
             self.replace(self.results,(version,result,error))
@@ -173,7 +181,7 @@ def run(config,*,once=False,page='overview',profile=None,at=None,ca_file=None):
     client=Client(config,ca_file)
     if once:
         route={'activity':'events','tokens':'usage','tree':'threads','quality':'health/sources'}.get(page,page)
-        print('\n'.join(render(page,client.get(route,params),120)))
+        print('\n'.join(render(page,filter_overview(page,client.get(route,params),params),120)))
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise ValueError('Интерактивному TUI нужен терминал. Для разового вывода используй --once.')
@@ -228,7 +236,7 @@ def _screen(screen,fetcher,config,page,params):
                 't: исторический момент. l: вернуться к LIVE.',
                 '/: буквальный поиск. Esc: назад / очистить поиск.',
                 'q: выход. Сервер и Codex продолжают работу.',
-                '? или Esc: закрыть справку.']
+                '? или Esc: закрытьть справку.']
         if page=='activity' and data.get('items') and not help_open:
             selected=min(selected,len(data['items'])-1)
             draw(3,error or f'Выбрано событие {selected+1}/{len(data["items"])}: {data["items"][selected]["kind"]} | j/k выбрать, Enter открыть')
