@@ -6,6 +6,7 @@ import os
 import sqlite3
 import stat
 import time
+import threading
 from pathlib import Path
 from contextlib import contextmanager
 from .model import FIELDS,digest,dumps
@@ -41,11 +42,14 @@ PRAGMA user_version=1;
 
 class Store(Queries):
     def __init__(self,path: str|Path):
+        self._reads=threading.local()
         self.path=Path(path).absolute()
         if any(p.is_symlink() for p in (self.path.parent,*self.path.parent.parents)):
             raise ValueError('Own database directory must not use symbolic links')
         self.path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
         self._check_files()
+        if not self.path.exists():
+            fd=os.open(self.path,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600);os.close(fd)
         with self.connect(write=True) as db:
             if db.execute('PRAGMA user_version').fetchone()[0] not in (0,1): raise RuntimeError('Unsupported own database version')
             db.execute('PRAGMA journal_mode=WAL');db.executescript(SCHEMA)
@@ -62,6 +66,10 @@ class Store(Queries):
 
     @contextmanager
     def connect(self,write=False):
+        existing=getattr(self._reads,'connection',None)
+        if not write and existing is not None:
+            yield existing
+            return
         self._check_files()
         lock=None;db=None
         try:
@@ -84,6 +92,7 @@ class Store(Queries):
                 db.execute('PRAGMA query_only=ON');deadline=time.monotonic()+3
                 db.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
                 db.execute('BEGIN')
+                self._reads.connection=db
             else: db.execute('PRAGMA synchronous=FULL')
             yield db
             if write: db.commit()
@@ -91,6 +100,7 @@ class Store(Queries):
             if db is not None and write: db.rollback()
             raise
         finally:
+            if not write: self._reads.connection=None
             if db is not None: db.close()
             if lock is not None: os.close(lock)
 
@@ -140,3 +150,7 @@ class Store(Queries):
                 src.backup(dst,pages=256,sleep=0.05)
                 if dst.execute('PRAGMA quick_check').fetchone()[0]!='ok': raise RuntimeError('Backup check failed')
             finally: dst.close()
+
+    def overview(self,params,profiles):
+        with self.connect():
+            return super().overview(params,profiles)
