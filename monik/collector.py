@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from .config import expand,forbidden
 from .model import digest,dumps,normalize,safe,timestamp
+from .snapshot import private_snapshot, source_signature, open_regular
 
 LOG=logging.getLogger('monik.collector')
 MAX_LINE=16*1024*1024
@@ -28,7 +29,7 @@ def source_file(path,roots):
     allowed=[expand(x).resolve() for x in roots]
     if forbidden(resolved) or not any(resolved==x or resolved.is_relative_to(x) for x in allowed):
         raise PermissionError('Outside source allowlist')
-    fd=os.open(resolved,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    fd=open_regular(resolved)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode): raise PermissionError('Source is not a regular file')
         actual=Path(os.readlink(f'/proc/self/fd/{fd}')) if Path('/proc/self/fd').exists() else resolved
@@ -51,7 +52,7 @@ class Collector:
     def __init__(self,config,store):
         self.config=config;self.store=store;self.stop=threading.Event();self.worker=None
         self.profiles=[{**p, '_explicit_root':p.get('root_id')} for p in config['profiles']];self.owners={};self.paths={}
-        self.last_discovery=0;self.last_success=None;self.last_error=None;self.ticks=0;self.source_reads=0;self.discovery_count=0;self.backfill_round=0;self.idle_cache={}
+        self.last_discovery=0;self.last_success=None;self.last_error=None;self.ticks=0;self.source_reads=0;self.discovery_count=0;self.backfill_round=0;self.idle_cache={};self.state_cache={};self.cycle_snapshot_bytes=0
 
     def start(self):
         if self.worker and self.worker.is_alive(): raise RuntimeError('Collector already running')
@@ -59,7 +60,9 @@ class Collector:
 
     def close(self):
         self.stop.set()
-        if self.worker: self.worker.join(timeout=10)
+        if self.worker:
+            self.worker.join(timeout=10)
+            if self.worker.is_alive(): raise RuntimeError('Collector has not stopped; retain service lock until process exit')
 
     def run(self):
         while not self.stop.is_set():
@@ -109,11 +112,27 @@ class Collector:
     def state_tree(self,p,root):
         path=expand(p['state_db']).resolve(strict=True)
         if forbidden(path): raise PermissionError('Excluded database')
-        # Do not use immutable=1 for a live WAL database.
-        db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=0.05)
+        fingerprint=source_signature(path)
+        cachekey=(str(path),root)
+        old=self.state_cache.get(cachekey)
+        if old and old[0]==fingerprint: return old[1]
+        remaining=self.config.get('state_snapshot_bytes',64*1024*1024)-self.cycle_snapshot_bytes
+        needed=sum(s[2] for s in fingerprint if s is not None)
+        if needed>remaining: raise ValueError('Metadata snapshot cycle byte budget exceeded')
+        self.cycle_snapshot_bytes+=needed
+        with private_snapshot(path,self.store.path.parent,remaining) as snapshot:
+            result=self._read_state_tree(snapshot,root)
+        if len(self.state_cache)>=128: self.state_cache.pop(next(iter(self.state_cache)))
+        self.state_cache[cachekey]=(fingerprint,result)
+        return result
+
+    def _read_state_tree(self,path,root):
+        # SQLite sees only a private copy. It may create SHM or checkpoint that copy.
+        db=sqlite3.connect(path,timeout=0.05)
         db.row_factory=sqlite3.Row;db.execute('PRAGMA query_only=ON');db.execute('PRAGMA busy_timeout=50')
         deadline=time.monotonic()+0.3;db.set_progress_handler(lambda:int(time.monotonic()>deadline),1000)
         try:
+            if db.execute('PRAGMA quick_check').fetchone()[0]!='ok': raise ValueError('Metadata snapshot failed quick_check')
             todo=[root];seen=set();edges={};rows=[]
             while todo and len(seen)<MAX_THREADS:
                 batch=[x for x in todo[:128] if x not in seen];todo=todo[128:]
@@ -129,12 +148,13 @@ class Collector:
         finally: db.close()
 
     def discover(self):
-        self.discovery_count+=1;descriptors=[];owners={}
+        self.discovery_count+=1;self.cycle_snapshot_bytes=0;descriptors=[];owners={}
         with self.store.connect() as db:
             historical=[dict(x) for x in db.execute('SELECT * FROM bindings LIMIT 16384')]
         for row in historical: owners.setdefault(row['thread_id'],set()).add(row['profile'])
         for p in self.profiles:
             name=p['name'];self.registry(p)
+            if p.get('root_id'): self.snapshot(name+':designation',name,p['root_id'],'root_binding',{'root_id':p['root_id'],'basis':'configured_or_registry'})
             roots={r['root_id'] for r in historical if r['profile']==name}
             if p.get('root_id'): roots.add(p['root_id'])
             for root in sorted(roots):
