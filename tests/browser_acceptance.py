@@ -72,6 +72,23 @@ def main():
                 page.click('[data-tab="limits"]');page.wait_for_timeout(250);page.reload();page.wait_for_timeout(350)
                 check('last_tab_persisted',page.locator('[data-tab="limits"]').get_attribute('aria-current')=='page' and 'История снимков' in page.locator('#content').inner_text())
                 page.click('[data-tab="activity"]');page.locator('#feed').wait_for()
+                page.click('#pause');page.wait_for_function("() => !S.inflight",timeout=5000)
+                check('manual_refresh_race_starts_idle',page.evaluate("!S.inflight && S.paused"))
+                page.evaluate("""window.__monikFetch=window.fetch;window.__monikRelease=null;let held=true;
+                    window.fetch=(...args)=>held?new Promise((resolve,reject)=>{window.__monikRelease=()=>{held=false;window.__monikFetch(...args).then(resolve,reject)}}):window.__monikFetch(...args);
+                    void refresh(true)""")
+                page.wait_for_timeout(100)
+                race=page.evaluate("({inflight:S.inflight,release:typeof window.__monikRelease,paused:S.paused,error:document.getElementById('error').textContent})")
+                check('manual_refresh_race_intercepts_fetch',race['inflight'] and race['release']=='function',race)
+                page.click('#refresh');check('manual_refresh_stays_busy_through_queued_fetch',page.locator('#refresh').get_attribute('aria-busy')=='true')
+                page.evaluate("window.__monikRelease()")
+                page.wait_for_function("() => document.getElementById('refresh').getAttribute('aria-busy')===null")
+                page.evaluate("window.fetch=window.__monikFetch;delete window.__monikFetch;delete window.__monikRelease")
+                emit(7000,'MANUAL_REFRESH_ONLY');page.wait_for_timeout(700)
+                check('paused_screen_holds_before_manual_refresh',page.get_by_text('MANUAL_REFRESH_ONLY',exact=True).count()==0)
+                page.click('#refresh');page.get_by_text('MANUAL_REFRESH_ONLY',exact=True).wait_for(timeout=3000)
+                check('manual_refresh_reads_latest_local_snapshot',page.get_by_text('MANUAL_REFRESH_ONLY',exact=True).count()==1 and page.locator('#refresh').get_attribute('aria-busy') is None)
+                page.click('#pause')
                 for i in range(8):
                     marker='LIVE_LATENCY_'+str(i);start=time.monotonic();emit(i,marker);page.get_by_text(marker,exact=True).wait_for(timeout=5000);latency.append(time.monotonic()-start)
                 check('live_latency_p95_under_2s',sorted(latency)[-1]<2,latency)

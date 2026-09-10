@@ -1,7 +1,7 @@
 # Архитектура 0.1
 
 ```
-allowlisted registry/state/rollout/lifecycle/Sol-link
+allowlisted registry/state/rollout/lifecycle/Sol-link/log DB
                    │ read-only, no RPC
                    ▼
           one Collector per service
@@ -19,7 +19,7 @@ allowlisted registry/state/rollout/lifecycle/Sol-link
 
 ## Модули
 
-`config.py` описывает только собственные настройки и запреты scope. `sandbox.py` устанавливает Landlock перед потоками. `collector.py` читает разрешённые источники; registry задаёт root, `threads`/`thread_spawn_edges` определяют reachable graph. Shared inode не создаёт вторую копию коллектора. При конфликте владельца соответствующий источник не относится к профилю.
+`config.py` описывает только собственные настройки и запреты scope. `sandbox.py` устанавливает Landlock перед потоками. `collector.py` читает разрешённые источники; registry задаёт root, `threads`/`thread_spawn_edges` определяют reachable graph. Shared inode не создаёт вторую копию коллектора. При конфликте владельца соответствующий источник не относится к профилю. Настроенный `logs_db` читается через `mode=ro` короткими диапазонами ID. Фиксированный SQL возвращает только основной процент, длительность окна, reset и план из response headers; полный `feedback_log_body` не возвращается коду адаптера и не сохраняется. Старый config v1 без этого ключа атомарно дополняется соседним с `state_db` путём; явный `null` остаётся opt-out.
 
 `model.py` нормализует и очищает данные. `storage.py` пишет исключительно собственную SQLite. `queries.py` содержит read-проекции. `app.py` предоставляет фиксированный API, owner authentication и SSE. `web/` не требует Node build или внешних ресурсов. `cli.py` даёт init/doctor/token/roots/backup/demo/serve, но не команды Codex.
 
@@ -43,7 +43,7 @@ Live offset стартует на границе последней заверш
 
 Cumulative требует baseline для каждого counter epoch; повтор имеет нулевую дельту, уменьшение явно отмечается и разрывает дальнейшую цепочку. Эти дельты диагностические, не canonical spend.
 
-Rate limits: owner-facing проекция выбирает последнее `codex/primary` по профилю; дополнительные модельные квоты остаются сохранёнными событиями и доступны как evidence, но не смешиваются с основным лимитом. Основное число `remaining=100-used`, только если 0 <= used <= 100. Старый снимок явно помечается как последнее известное значение. Изменения windows, reset time и немонотонность видимы; причина неизвестна. Счётчика «сумма падений процента» нет.
+Rate limits: owner-facing проекция выбирает последнее `codex/primary` по профилю. При наличии `logs_db` свежие значения берутся из уже сохранённых Codex response headers, привязанных к доказанному `thread_id`; это пассивное чтение, без `/status`, provider-запроса или app-server RPC. Дополнительные модельные квоты остаются сохранёнными событиями и не смешиваются с основным лимитом. Основное число `remaining=100-used`, только если 0 <= used <= 100. Старый снимок явно помечается как последнее известное значение. Изменения windows, reset time и немонотонность видимы; причина неизвестна. Счётчика «сумма падений процента» нет.
 
 ## Границы и дальнейшие работы
 

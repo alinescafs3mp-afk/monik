@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import sqlite3
 import stat
 import threading
@@ -19,6 +21,36 @@ MAX_LINE=16*1024*1024
 RECENT=2*1024*1024
 BATCH=256*1024
 MAX_THREADS=4096
+LOG_ID_WINDOW=100_000
+# Keep the retry query below SQLite's legacy 999-variable build limit.
+LOG_PENDING_MAX=768
+LOG_PENDING_SECONDS=120
+LOG_TARGET='codex_http_client::client'
+NUMBER=re.compile(r'^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$')
+PLAN=re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+
+
+def _header_number(value,*,minimum=0,maximum=None,integer=False):
+    """Parse one projected numeric response header without accepting loose text."""
+    if not isinstance(value,str) or not NUMBER.fullmatch(value): return None
+    try: result=float(value)
+    except (ValueError,OverflowError): return None
+    if not math.isfinite(result) or result<minimum or (maximum is not None and result>maximum): return None
+    if integer and not result.is_integer(): return None
+    return int(result) if integer else result
+
+
+def projected_http_limit(row):
+    """Build the public account-limit projection; no other HTTP header survives."""
+    used=_header_number(row.get('used_percent'),maximum=100)
+    if used is None: return None
+    window=_header_number(row.get('window_minutes'),minimum=1,integer=True)
+    reset=_header_number(row.get('resets_at'),integer=True)
+    plan=row.get('plan') if isinstance(row.get('plan'),str) and PLAN.fullmatch(row['plan']) else None
+    return {'limit_id':'codex','limit_name':None,'plan':plan,'cause':'unknown','role':'primary',
+            'used_percent':used,'remaining_percent':100-used,'window_minutes':window,
+            'resets_at':timestamp(reset),'valid':True,'raw':{'projection':'codex_response_headers'},
+            'observation_basis':'local_codex_response_headers'}
 
 
 @contextmanager
@@ -51,7 +83,7 @@ def read_json(path,limit=2*1024*1024):
 class Collector:
     def __init__(self,config,store):
         self.config=config;self.store=store;self.stop=threading.Event();self.worker=None
-        self.profiles=[{**p, '_explicit_root':p.get('root_id')} for p in config['profiles']];self.owners={};self.paths={}
+        self.profiles=[{**p, '_explicit_root':p.get('root_id')} for p in config['profiles']];self.owners={};self.paths={};self.log_paths={}
         self.last_discovery=0;self.last_success=None;self.last_error=None;self.ticks=0;self.source_reads=0;self.discovery_count=0;self.backfill_round=0;self.idle_cache={};self.state_cache={};self.cycle_snapshot_bytes=0
 
     def start(self):
@@ -72,7 +104,7 @@ class Collector:
             self.stop.wait(self.config.get('poll_seconds',0.5))
 
     def status(self):
-        return {'running':bool(self.worker and self.worker.is_alive()),'last_success':self.last_success,'last_error':self.last_error,'ticks':self.ticks,'source_reads':self.source_reads,'discovery_count':self.discovery_count,'physical_sources':len(self.paths),'model_calls':0,'rpc_calls':0}
+        return {'running':bool(self.worker and self.worker.is_alive()),'last_success':self.last_success,'last_error':self.last_error,'ticks':self.ticks,'source_reads':self.source_reads,'discovery_count':self.discovery_count,'physical_sources':len(self.paths)+len(self.log_paths),'model_calls':0,'rpc_calls':0}
 
     def snapshot(self,source,profile,thread,kind,data):
         data=safe(data);hashed=digest(data);key=source+':'+kind+':'+thread
@@ -148,7 +180,7 @@ class Collector:
         finally: db.close()
 
     def discover(self):
-        self.discovery_count+=1;self.cycle_snapshot_bytes=0;descriptors=[];owners={}
+        self.discovery_count+=1;self.cycle_snapshot_bytes=0;descriptors=[];owners={};log_paths={}
         with self.store.connect() as db:
             historical=[dict(x) for x in db.execute('SELECT * FROM bindings LIMIT 16384')]
         for row in historical: owners.setdefault(row['thread_id'],set()).add(row['profile'])
@@ -178,6 +210,18 @@ class Collector:
             for row in p.get('files',[]):
                 tid=row['thread_id'];owners.setdefault(tid,set()).add(name)
                 descriptors.append({'path':row['path'],'profile':name,'thread':tid,'kind':row.get('kind','rollout'),'roots':[row['path']]})
+            if p.get('logs_db'):
+                try:
+                    path=expand(p['logs_db']).resolve(strict=True)
+                    if forbidden(path): raise PermissionError('Excluded database')
+                    fd=open_regular(path)
+                    try:
+                        info=os.fstat(fd);key=f'{info.st_dev}:{info.st_ino}'
+                    finally: os.close(fd)
+                    item=log_paths.setdefault(key,{'path':str(path),'profiles':set()})
+                    item['profiles'].add(name)
+                except (OSError,ValueError) as exc:
+                    self.source_health(name+':http-limits',name,'http_limit','missing' if isinstance(exc,FileNotFoundError) else 'error',type(exc).__name__)
         self.owners={tid:next(iter(names)) for tid,names in owners.items() if len(names)==1}
         ambiguous={tid for tid,names in owners.items() if len(names)>1}
         for tid in ambiguous: self.source_health('identity:'+digest(tid)[:12],'unknown','identity','conflict','Thread belongs to multiple configured root trees; collection paused for it')
@@ -201,6 +245,7 @@ class Collector:
             else: self.paths.pop(key,None)
         for key,d in list(self.paths.items()):
             if d['thread'] in ambiguous: self.paths.pop(key,None)
+        self.log_paths=log_paths
         self.last_discovery=time.monotonic()
 
     def emit_error(self,db,d,key,epoch,offset,kind,detail):
@@ -308,9 +353,111 @@ class Collector:
             self.source_health(key,d['profile'],d['kind'],'missing' if isinstance(exc,FileNotFoundError) else 'error',type(exc).__name__)
         return used
 
+    def log_limits(self,key,d):
+        """Project only safe quota headers from the configured Codex log DB.
+
+        The SQL expression returns seven allowlisted scalar columns.  In
+        particular, the complete log body and unrelated HTTP headers (including
+        cookies) never cross the SQLite connection into monik.
+        """
+        path=Path(d['path']);cursor_key='http-limits:'+key;source=None
+        try:
+            fd=open_regular(path)
+            try:
+                opened=os.fstat(fd)
+                if f'{opened.st_dev}:{opened.st_ino}'!=key: raise ValueError('Log database identity changed')
+                source=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.05)
+                source.row_factory=sqlite3.Row;source.execute('PRAGMA query_only=ON');source.execute('PRAGMA trusted_schema=OFF')
+                source.execute('PRAGMA temp_store=MEMORY');source.execute('PRAGMA busy_timeout=50')
+                deadline=time.monotonic()+.3;source.set_progress_handler(lambda:int(time.monotonic()>deadline),1000)
+                required={'id','ts','target','thread_id','feedback_log_body'}
+                columns={row[1] for row in source.execute('PRAGMA table_info(logs)')}
+                if not required<=columns: raise ValueError('Unsupported logs schema')
+                maximum=source.execute('SELECT max(id) FROM logs').fetchone()[0]
+                maximum=maximum if type(maximum) is int and maximum>=0 else 0
+                with self.store.connect() as db: state=self.store.cursor(db,cursor_key)
+                previous=state.get('last_id');pending={}
+                if type(previous) is not int or previous<0 or previous>maximum:
+                    previous=max(0,maximum-LOG_ID_WINDOW)
+                    generation=(state.get('generation') if type(state.get('generation')) is int else 0)+1
+                else:
+                    generation=state.get('generation',0)
+                    if type(generation) is not int or generation<0: generation=0
+                    saved_pending=state.get('pending',[])
+                    if not isinstance(saved_pending,list): saved_pending=[]
+                    pending={item['id']:item['first_seen'] for item in saved_pending
+                        if isinstance(item,dict) and type(item.get('id')) is int and item['id']>=0
+                        and type(item.get('first_seen')) in (int,float) and math.isfinite(item['first_seen'])
+                        and item['first_seen']>=0}
+                through=min(maximum,previous+LOG_ID_WINDOW)
+                retry=sorted(pending)[-LOG_PENDING_MAX:]
+                retry_clause=' OR id IN ('+','.join('?' for _ in retry)+')' if retry else ''
+                rows=source.execute('''WITH candidates AS (
+                    SELECT id,ts,thread_id,
+                      substr(feedback_log_body,
+                        instr(feedback_log_body,'headers=')+8,
+                        instr(feedback_log_body,'} version=')-(instr(feedback_log_body,'headers=')+8)+1) AS headers
+                    FROM logs
+                    WHERE ((id>? AND id<=?)'''+retry_clause+''') AND target=?
+                      AND instr(feedback_log_body,'headers={')>0
+                      AND instr(feedback_log_body,'} version=')>0
+                      AND instr(feedback_log_body,'"x-codex-primary-used-percent"')>0)
+                    SELECT id,ts,thread_id,
+                      json_extract(headers,'$."x-codex-primary-used-percent"') AS used_percent,
+                      json_extract(headers,'$."x-codex-primary-window-minutes"') AS window_minutes,
+                      json_extract(headers,'$."x-codex-primary-reset-at"') AS resets_at,
+                      json_extract(headers,'$."x-codex-plan-type"') AS plan
+                    FROM candidates WHERE json_valid(headers) ORDER BY id''',(previous,through,*retry,LOG_TARGET)).fetchall()
+                current=os.stat(path)
+                if (current.st_dev,current.st_ino)!=(opened.st_dev,opened.st_ino): raise ValueError('Log database identity changed')
+            finally:
+                if source is not None:
+                    try: source.close()
+                    except sqlite3.Error: pass
+                os.close(fd)
+            grouped={};last_by_profile={};unresolved={};now=time.time()
+            for row in rows:
+                profile=self.owners.get(row['thread_id'])
+                if profile is None:
+                    first=pending.get(row['id'],now)
+                    if now-first<=max(LOG_PENDING_SECONDS,2*self.config.get('discovery_seconds',5)):
+                        unresolved[row['id']]=first
+                    continue
+                if profile not in d['profiles']: continue
+                value=projected_http_limit(dict(row))
+                at=timestamp(row['ts'])
+                if value is None or at is None: continue
+                hashed=digest(value);minute=int(at//60)
+                grouped[(profile,row['thread_id'],minute,hashed)]=(row,at,value,hashed)
+                last_by_profile[profile]=max(at,last_by_profile.get(profile,0))
+            pending_rows=[{'id':item,'first_seen':unresolved[item]} for item in sorted(unresolved)[-LOG_PENDING_MAX:]]
+            with self.store.connect(write=True) as db:
+                for (profile,thread,minute,_),(row,at,value,hashed) in grouped.items():
+                    native=f'{cursor_key}:{generation}:{profile}:{thread}:{minute}:{hashed}'
+                    event={'profile':profile,'thread_id':thread,'kind':'limit','at':at,
+                           'timestamp_kind':'codex_http_response_header','native':native,
+                           'model':None,'turn_id':None,'call_id':None,'response_id':None,
+                           'data':value,'text':dumps(value)}
+                    self.store.put(db,event,{'source':cursor_key,'epoch':str(generation),'offset':row['id'],
+                        'delivery':native,'raw_sha256':hashed,'observed_at':now,'ingested_at':now})
+                self.store.save_cursor(db,cursor_key,{'last_id':through,'generation':generation,'pending':pending_rows})
+                for profile in d['profiles']:
+                    self.store.health(db,cursor_key+':'+profile,profile,'http_limit','watching',
+                        'safe_projected_headers='+str(sum(1 for k in grouped if k[0]==profile))+
+                        '; unresolved_thread_rows='+str(len(pending_rows)),
+                        maximum,through,last_by_profile.get(profile))
+            self.source_reads+=len(rows)
+        except (OSError,sqlite3.Error,ValueError,TypeError) as exc:
+            for profile in d['profiles']:
+                self.source_health(cursor_key+':'+profile,profile,'http_limit',
+                    'missing' if isinstance(exc,FileNotFoundError) else 'error',type(exc).__name__)
+
     def tick(self):
         self.ticks+=1
         if time.monotonic()-self.last_discovery>=self.config.get('discovery_seconds',5): self.discover()
+        for key,d in list(self.log_paths.items()):
+            if self.stop.is_set(): return
+            self.log_limits(key,d)
         entries=list(self.paths.items());used=0
         # Every source gets its live lane before any historical backfill work.
         for key,d in entries:

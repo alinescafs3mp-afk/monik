@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id), F = ['profile', 'thread_id', 'model', 'kind', 'q', 'search_mode', 'view', 'since', 'until', 'at'];
 const TABS = new Set(['overview', 'activity', 'tokens', 'limits', 'tree', 'quality']), LAST_TAB_KEY = 'monik-last-tab';
 function savedTab() { try { const value = localStorage.getItem(LAST_TAB_KEY); return TABS.has(value) ? value : 'overview'; } catch { return 'overview'; } }
-const S = { tab: savedTab(), params: {}, cursor: 0, es: null, authed: false, past: false, pending: 0, before: null, next: null, follow: true, version: 0, timer: null, inflight: false, again: false, detail: null, paused: false, history: [], forceQueued: false, labels: {}, profileCatalogue: [] };
+const S = { tab: savedTab(), params: {}, cursor: 0, es: null, authed: false, past: false, pending: 0, before: null, next: null, follow: true, version: 0, timer: null, inflight: false, again: false, refreshCycle: 0, detail: null, paused: false, history: [], forceQueued: false, labels: {}, profileCatalogue: [] };
 const number = v => typeof v !== 'number' || !Number.isFinite(v) ? 'нет измерения' : new Intl.NumberFormat('ru-RU').format(v);
 const percent = v => typeof v === 'number' && Number.isFinite(v) ? number(v) + '%' : 'нет измерения';
 const date = v => v === null || v === undefined ? 'время неизвестно' : new Date(typeof v === 'number' ? v * 1000 : v).toLocaleString('ru-RU');
@@ -21,7 +21,7 @@ function metric(label, value) { return append(el('div', 'metric'), el('div', 'me
 function params(extra = {}) { const p = new URLSearchParams({ ...S.params, ...extra }); for (const [k, v] of p)
     if (v === null || v === '' || v === 'undefined')
         p.delete(k); return p; }
-async function api(path, extra = {}, options) { const r = await fetch('/api/v1/' + path + '?' + params(extra), options || { credentials: 'same-origin' }); if (r.status === 401) {
+async function api(path, extra = {}, options = {}) { const r = await fetch('/api/v1/' + path + '?' + params(extra), { credentials: 'same-origin', cache: 'no-store', ...options }); if (r.status === 401) {
     showLogin();
     throw Error('Нужен вход владельца.');
 } if (!r.ok) {
@@ -54,6 +54,7 @@ function limitBlock(x) {
         n.append(bar);
     }
     append(n, el('div', 'small muted', `Использовано: ${percent(x.used_percent)} · окно: ${number(x.window_minutes)} мин`), el('div', 'small muted', `Сброс: ${date(x.resets_at)} · возраст снимка: ${age(x.age_seconds)}${x.stale ? ' · УСТАРЕЛ' : ''}`));
+    append(n, el('div', 'small muted', x.observation_basis === 'local_codex_response_headers' ? 'Источник: локально сохранённые заголовки ответа Codex' : 'Источник: сохранённое событие Codex'));
     if (x.labels && x.labels.length)
         n.append(el('div', 'small warn', x.labels.map(k => ({ non_monotonic_snapshot: 'Процент уменьшился', window_changed: 'Окно изменилось', reset_time_changed: 'Срок сброса изменился' }[k] || k)).join(' · ') + ' · причина неизвестна'));
     n.append(evidenceButton(x.uid));
@@ -206,7 +207,7 @@ function renderTree(t) { const p = el('section', 'panel'); append(p, title('Де
     append(c, el('h3', '', `${names[n.profile] || n.profile} · ${n.nickname || n.thread_id}`), el('div', 'small mono', n.thread_id), el('div', 'small muted', `Родитель: ${n.parent_thread_id || 'нет подтверждённого родителя'}`), el('div', n.stale ? 'warn' : '', `${states[n.state] || n.state}${n.stale ? ' · УСТАРЕЛО' : ''}`), el('div', 'small muted', `Возраст состояния: ${age(n.age_seconds)} · assignment: ${n.assignment_id || 'нет данных'} · generation: ${n.generation ?? 'нет данных'}`), append(el('div', 'button-row'), evidenceButton(n.uid), button('Лента ветки', () => { S.params.profile = n.profile; S.params.thread_id = n.thread_id; syncFilters(); setTab('activity'); })));
     p.append(c);
 } p.append(el('p', 'small muted', 'Топология из state/registry появляется в истории только с момента наблюдения. Без новых подтверждений старое «активен» не становится текущей активностью. Глубина отступа ограничена, исходные parent ID сохранены.')); return p; }
-function renderQuality(q) { const out = el('div', 'stack'), p = el('section', 'panel'), c = q.collector; append(p, title('Качество наблюдения', 'Текущее состояние коллектора, не срез T'), el('p', 'muted', `Циклов: ${number(c.ticks)} · физических JSONL-источников: ${number(c.physical_sources)} · прочитанных записей: ${number(c.source_reads)} · последнее успешное чтение цикла: ${date(c.last_success)}`)); const stats = el('div', 'stat-row'); for (const [label, v] of [['Вызовов моделей', c.model_calls], ['RPC-вызовов', c.rpc_calls], ['Доп. доставок', q.additional_deliveries], ['Свободно, МиБ', Math.floor(q.disk.free_bytes / 1048576)]])
+function renderQuality(q) { const out = el('div', 'stack'), p = el('section', 'panel'), c = q.collector; append(p, title('Качество наблюдения', 'Текущее состояние коллектора, не срез T'), el('p', 'muted', `Циклов: ${number(c.ticks)} · физических источников: ${number(c.physical_sources)} · прочитанных записей: ${number(c.source_reads)} · последнее успешное чтение цикла: ${date(c.last_success)}`)); const stats = el('div', 'stat-row'); for (const [label, v] of [['Вызовов моделей', c.model_calls], ['RPC-вызовов', c.rpc_calls], ['Доп. доставок', q.additional_deliveries], ['Свободно, МиБ', Math.floor(q.disk.free_bytes / 1048576)]])
     stats.append(append(el('div', 'stat-tile'), el('strong', '', number(v)), el('span', 'small muted', label))); append(p, stats, el('p', 'small muted', q.filesystem_boundary?.landlock_abi ? `Запрет записи вне monik: Landlock ABI ${q.filesystem_boundary.landlock_abi}` : 'Изолированный тестовый запуск без Landlock; production-команда serve требует ABI ≥ 3.'), table(['Профиль / источник', 'Тип', 'Состояние', 'Проверен', 'Offset / размер', 'Примечание'], q.sources.map(x => [`${x.profile} / ${x.source}`, x.kind, { watching: 'Наблюдается', mapped: 'Сопоставлен', unknown: 'Неизвестно', missing: 'Источник отсутствует', error: 'Ошибка', conflict: 'Конфликт идентичности', partial_line: 'Незавершённая строка', catching_up: 'Догоняем историю', replaced: 'Файл заменён', gap: 'Разрыв' }[x.status] || x.status, `${age(x.check_age_seconds)} назад`, `${number(x.offset)} / ${number(x.size)}`, x.detail])), el('p', 'small muted', `Последняя ошибка цикла: ${c.last_error || 'не зафиксирована'}. Потеря источника не стирает накопленную историю.`)); out.append(p); const coverage = el('section', 'panel'); append(coverage, title('Покрытие и границы достоверности', 'Неизвестное не превращается в ноль'), el('p', 'muted', 'Не собираются: скрытые рассуждения, промежуточные streaming-дельты, сетевые ретраи, биллинг, app-server RPC, тела файлов handoff и thread-history DB. Тексты инструментов очищаются от типовых секретов, но автоматическая очистка не гарантирует удаления всех возможных секретов.'), table(['Профиль', 'Тип', 'Записей', 'Первое событие', 'Последнее событие', 'Без времени источника'], q.intervals.map(x => [x.profile, kinds[x.kind] || x.kind, number(x.records), date(x.earliest), date(x.latest), number(x.unknown_time)]))); out.append(coverage); return out; }
 async function refresh(force = false) {
     if (!S.authed)
@@ -269,6 +270,7 @@ async function refresh(force = false) {
     }
     finally {
         S.inflight = false;
+        S.refreshCycle++;
         if (S.again) {
             const forced = S.forceQueued;
             S.again = false;
@@ -524,7 +526,7 @@ function syncProfiles() { const selected = S.params.profile || ''; const select 
 } if (selected && !S.profileCatalogue.includes(selected)) { const unknown = el('option', '', `Неизвестный профиль: ${selected}`); unknown.value = selected; select.append(unknown); } select.value = selected; }
 $('pause').onclick = () => { S.paused = !S.paused; $('pause').textContent = S.paused ? 'Продолжить обновление' : 'Приостановить экран'; $('pause').setAttribute('aria-pressed', String(S.paused)); $('pause-note').hidden = !S.paused; if (!S.paused)
     queueRefresh(true); };
-$('refresh').onclick = () => refresh(true);
+$('refresh').onclick = async () => { const control=$('refresh'),label=control.textContent,target=S.refreshCycle+(S.inflight?2:1); control.disabled=true;control.setAttribute('aria-busy','true');control.textContent='Обновляю…'; try { await refresh(true); while(S.authed&&control.isConnected&&S.refreshCycle<target) await new Promise(resolve=>setTimeout(resolve,20)); } finally { control.disabled=false;control.removeAttribute('aria-busy');control.textContent=label; } };
 $('detail').addEventListener('close', () => { S.detailRequest = null; if (canRefresh() && S.pending)
     queueRefresh(true); });
 for (const b of document.querySelectorAll('[data-hours]'))

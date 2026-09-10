@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,18 @@ class PrivateFiles(unittest.TestCase):
         self.assertEqual(path.stat().st_mode & 0o777,0o600)
         self.assertEqual(token.stat().st_mode & 0o777,0o600)
         self.assertEqual(init(path),path)
+
+    def test_init_migrates_missing_logs_db_but_preserves_explicit_opt_out(self):
+        path=init(self.root/'migrate'/'config.json',home=self.root/'owner-home')
+        config=load(path);config.pop('_path',None)
+        config['profiles'][0].pop('logs_db')
+        config['profiles'][1]['logs_db']=None
+        path.write_text(json.dumps(config));path.chmod(0o600)
+        init(path)
+        migrated=load(path)
+        self.assertEqual(migrated['profiles'][0]['logs_db'],
+                         str(Path(migrated['profiles'][0]['state_db']).with_name('logs_2.sqlite')))
+        self.assertIsNone(migrated['profiles'][1]['logs_db'])
 
     def test_config_symlink_hardlink_and_weak_mode_are_refused(self):
         original=self.root/'original';write_config(original,{'safe':True})

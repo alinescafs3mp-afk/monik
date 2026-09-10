@@ -15,7 +15,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from monik.app import create_app
 from monik.cli import make_demo,write_config
-from monik.collector import Collector,source_file
+from monik.collector import Collector,source_file,projected_http_limit
 from monik.config import load,forbidden
 from monik.model import normalize,usage,rate_windows,redact,safe,timestamp,dumps,digest,MAX_STORED_TEXT_BYTES
 from monik.storage import Store
@@ -115,6 +115,67 @@ class Local(unittest.TestCase):
         historical=self.store.limits({'at':150})
         self.assertEqual([(x['limit_id'],x['remaining_percent']) for x in historical['latest']],
                          [('codex',92)])
+
+    def test_http_log_projection_refreshes_primary_limit_without_retaining_headers(self):
+        log=self.source/'logs.sqlite';db=sqlite3.connect(log)
+        db.execute('''CREATE TABLE logs(id INTEGER PRIMARY KEY,ts INTEGER,target TEXT,
+            thread_id TEXT,feedback_log_body TEXT)''')
+        secret='COOKIE_MUST_NEVER_REACH_MONIK'
+        def body(used):
+            headers={'x-codex-plan-type':'pro','x-codex-primary-used-percent':str(used),
+                'x-codex-primary-window-minutes':'10080','x-codex-primary-reset-at':'1789578423',
+                'set-cookie':secret}
+            return 'request: Request completed headers='+json.dumps(headers,separators=(',',':'))+' version=HTTP/2'
+        db.execute('INSERT INTO logs VALUES(?,?,?,?,?)',(1,1789070000,'codex_http_client::client','A',body(43)))
+        db.execute('INSERT INTO logs VALUES(?,?,?,?,?)',(2,1789070001,'unrelated','A','set-cookie='+secret))
+        db.commit();db.close()
+        c=self.collector([],[{'name':'astra','root_id':'A','logs_db':str(log)}]);c.tick()
+        latest=self.store.limits({})['latest']
+        self.assertEqual([(x['profile'],x['remaining_percent']) for x in latest],[('astra',57)])
+        self.assertEqual(latest[0]['observation_basis'],'local_codex_response_headers')
+        self.assertNotIn(secret,dumps(self.store.detail(latest[0]['uid'],{})))
+        self.assertNotIn(secret,(self.data/'test.sqlite').read_bytes().decode('utf-8','ignore'))
+        db=sqlite3.connect(log);db.execute('INSERT INTO logs VALUES(?,?,?,?,?)',
+            (3,1789070065,'codex_http_client::client','A',body(44)));db.commit();db.close()
+        c.tick();self.assertEqual(self.store.limits({})['latest'][0]['remaining_percent'],56)
+
+    def test_shared_http_log_is_separated_by_proven_profile_roots(self):
+        log=self.source/'shared.sqlite';db=sqlite3.connect(log)
+        db.execute('''CREATE TABLE logs(id INTEGER PRIMARY KEY,ts INTEGER,target TEXT,
+            thread_id TEXT,feedback_log_body TEXT)''')
+        def body(used):
+            return 'headers='+json.dumps({'x-codex-primary-used-percent':str(used),
+                'x-codex-primary-window-minutes':'10080'},separators=(',',':'))+' version=HTTP/2'
+        db.executemany('INSERT INTO logs VALUES(?,?,?,?,?)',[
+            (1,1789070000,'codex_http_client::client','ASTRA',body(43)),
+            (2,1789070001,'codex_http_client::client','SOL',body(35)),
+            (3,1789070002,'codex_http_client::client','UNKNOWN',body(99))])
+        db.commit();db.close()
+        profiles=[{'name':'astra','root_id':'ASTRA','logs_db':str(log)},
+                  {'name':'sol','root_id':'SOL','logs_db':str(log)}]
+        c=self.collector([],profiles);c.tick()
+        self.assertEqual({x['profile']:x['remaining_percent'] for x in self.store.limits({})['latest']},
+                         {'astra':57,'sol':65})
+
+    def test_http_log_retries_row_until_new_thread_owner_is_discovered(self):
+        log=self.source/'late-owner.sqlite';db=sqlite3.connect(log)
+        db.execute('''CREATE TABLE logs(id INTEGER PRIMARY KEY,ts INTEGER,target TEXT,
+            thread_id TEXT,feedback_log_body TEXT)''')
+        body='headers='+json.dumps({'x-codex-primary-used-percent':'43'},separators=(',',':'))+' version=HTTP/2'
+        db.execute('INSERT INTO logs VALUES(?,?,?,?,?)',
+                   (1,1789070000,'codex_http_client::client','CHILD',body));db.commit();db.close()
+        c=self.collector([],[{'name':'astra','root_id':'ROOT','logs_db':str(log)}]);c.tick()
+        self.assertEqual(self.store.limits({})['latest'],[])
+        c.owners['CHILD']='astra';c.log_limits(next(iter(c.log_paths)),next(iter(c.log_paths.values())))
+        self.assertEqual(self.store.limits({})['latest'][0]['remaining_percent'],57)
+
+    def test_http_limit_projection_rejects_loose_or_invalid_values(self):
+        self.assertIsNone(projected_http_limit({'used_percent':'43 percent'}))
+        self.assertIsNone(projected_http_limit({'used_percent':'101'}))
+        value=projected_http_limit({'used_percent':'43.5','window_minutes':'10080','resets_at':'1789578423'})
+        self.assertEqual(value['remaining_percent'],56.5)
+        self.assertEqual(value['window_minutes'],10080)
+        self.assertIsNone(projected_http_limit({'used_percent':'43','plan':'secret value'})['plan'])
     def test_main_limit_snapshot_respects_knowledge_cutoff(self):
         old={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
             'limit_id':'codex','primary':{'used_percent':8,'window_minutes':10080}}}}
@@ -315,6 +376,30 @@ except PermissionError: pass
 else: raise AssertionError('source write unexpectedly allowed')
 """
         r=subprocess.run([sys.executable,'-c',code,str(self.root)],capture_output=True);self.assertEqual(r.returncode,0,r.stderr);self.assertEqual(original.read_text(),'original')
+
+    @unittest.skipIf(abi()<3,'Native Landlock syscalls unavailable in this container; fail-closed path is tested')
+    def test_http_log_wal_projection_works_without_source_mutation_under_landlock(self):
+        source=self.source/'logs.sqlite';db=sqlite3.connect(source)
+        db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA wal_autocheckpoint=0')
+        db.execute('''CREATE TABLE logs(id INTEGER PRIMARY KEY,ts INTEGER,target TEXT,
+            thread_id TEXT,feedback_log_body TEXT)''')
+        body='headers='+json.dumps({'x-codex-primary-used-percent':'43',
+            'x-codex-primary-window-minutes':'10080'},separators=(',',':'))+' version=HTTP/2'
+        db.execute('INSERT INTO logs VALUES(?,?,?,?,?)',(1,1789070000,'codex_http_client::client','A',body));db.commit()
+        def signatures():
+            return {p.name:(p.stat().st_size,hashlib.sha256(p.read_bytes()).hexdigest()) for p in self.source.iterdir()}
+        before=signatures()
+        code="""from monik.sandbox import enforce
+from monik.storage import Store
+from monik.collector import Collector
+from pathlib import Path
+import sys
+root=Path(sys.argv[1]);enforce(root/'data');store=Store(root/'data'/'landlock.sqlite')
+collector=Collector({'profiles':[{'name':'astra','root_id':'A','logs_db':str(root/'sources'/'logs.sqlite')}],'poll_seconds':.5,'discovery_seconds':5},store)
+collector.tick();assert store.limits({})['latest'][0]['remaining_percent']==57
+"""
+        r=subprocess.run([sys.executable,'-c',code,str(self.root)],capture_output=True)
+        self.assertEqual(r.returncode,0,r.stderr);self.assertEqual(before,signatures());db.close()
 
 class API(unittest.TestCase):
     def setUp(self):

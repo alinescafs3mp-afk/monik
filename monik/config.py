@@ -89,6 +89,7 @@ def defaults(home=None):
     return {'version':1,'data_dir':str(home/'.local/share/monik'),'bind':'127.0.0.1','port':8666,
         'tls_cert':None,'tls_key':None,'poll_seconds':0.5,'discovery_seconds':5,
         'profiles':[{'name':name,'root_id':None,'state_db':str(base/'state_5.sqlite'),
+            'logs_db':str(base/'logs_2.sqlite'),
             'registry':str(runtime/'subagent-lifecycle/state'/name/'registry.json'),
             'lifecycle_events':str(runtime/'subagent-lifecycle/state'/name/'events.jsonl'),
             'peer_events':str(runtime/('sol-link-main.events.jsonl' if name=='astra' else 'sol-link-solgoodman.events.jsonl')),
@@ -123,7 +124,7 @@ def load(path):
     if forbidden(data) or data in (Path('/'),Path.home()): raise ValueError('Unsafe own data directory')
     roots=[]
     for p in profiles:
-        for key in ('registry','lifecycle_events','peer_events','state_db'):
+        for key in ('registry','lifecycle_events','peer_events','state_db','logs_db'):
             if p.get(key) is not None and not isinstance(p[key],str): raise ValueError('Source path must be a string')
         if not isinstance(p.get('rollout_dirs',[]),list) or any(not isinstance(x,str) for x in p.get('rollout_dirs',[])):
             raise ValueError('rollout_dirs must be a list of paths')
@@ -135,7 +136,7 @@ def load(path):
             if item.get('kind','rollout') not in ('rollout','lifecycle','peer'): raise ValueError('Unknown explicit source kind')
         if p.get('root_id') is not None and (not isinstance(p['root_id'],str) or not 1<=len(p['root_id'])<=128 or any(c.isspace() for c in p['root_id'])):
             raise ValueError('Invalid configured root_id')
-        for key in ('registry','lifecycle_events','peer_events','state_db'):
+        for key in ('registry','lifecycle_events','peer_events','state_db','logs_db'):
             if p.get(key):
                 source=expand(p[key])
                 if forbidden(source) or forbidden(source.resolve()): raise ValueError('Excluded source path')
@@ -172,6 +173,17 @@ def init(path,home=None):
     if config is not None:
         token=private_file(config['token_file'],maximum=512,label='Owner token').read_text().strip()
         if not 32<=len(token)<=256: raise ValueError('Owner token must contain 32..256 characters')
+        # ``logs_db`` was added after config schema v1 shipped.  Missing means an
+        # old config and is migrated to the sibling Codex log DB; an explicit
+        # null remains the owner's opt-out.
+        changed=False
+        for profile in config['profiles']:
+            if 'logs_db' not in profile and isinstance(profile.get('state_db'),str) and profile['state_db']:
+                profile['logs_db']=str(Path(profile['state_db']).with_name('logs_2.sqlite'));changed=True
+        if changed:
+            config.pop('_path',None)
+            atomic_private_write(path,(json.dumps(config,ensure_ascii=False,indent=2)+'\n').encode())
+            load(path)
         return path
     path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     os.chmod(path.parent,0o700);private_directory(path.parent)

@@ -91,9 +91,11 @@ def render(page,data,width=100,selected=None):
     elif page=='limits':
         for item in data.get('latest',[]):
             remaining='нет измерения' if item.get('remaining_percent') is None else number(item['remaining_percent'])+'%'
+            basis='локальные заголовки ответа Codex' if item.get('observation_basis')=='local_codex_response_headers' else 'сохранённое событие Codex'
             lines += [f"{item['profile']} | Основной лимит",
                       f"  {'Последний известный остаток' if item['stale'] else 'Осталось'}: {remaining} | окно: {number(item.get('window_minutes'))} мин",
-                      f"  Сброс: {date(item.get('resets_at'))} | возраст: {int(item['age_seconds'])} с"+(' | УСТАРЕЛО' if item['stale'] else ''),'']
+                      f"  Сброс: {date(item.get('resets_at'))} | возраст: {int(item['age_seconds'])} с"+(' | УСТАРЕЛО' if item['stale'] else ''),
+                      f"  Источник: {basis}",'']
         lines.append('Проценты не пересчитываются в токены. Причина изменения снимка неизвестна.')
     elif page=='tree':
         for item in data.get('items',[]):
