@@ -1,0 +1,53 @@
+{
+  "date": "2026-09-10",
+  "base_commit": "f8178622de24b6cc685b0b6f9e1a869d7c4dd56e",
+  "scope": "frontend and tests only; backend, CLI, package version and database schema unchanged",
+  "python": "3.13.5",
+  "sqlite": "3.46.1",
+  "core": {
+    "run": 44,
+    "passed": 43,
+    "skipped": 1,
+    "failed": 0,
+    "expected_failures": 0
+  },
+  "fixture_checks": 11,
+  "wire_checks": 23,
+  "offline_dom_checks": 39,
+  "native_browser": "blocked by administrator policy, not passed",
+  "native_landlock": "unavailable in container, skipped; fail-closed covered",
+  "production_accepted": false,
+  "files": {
+    "monik/web/app.js": {
+      "git_blob": "ce42949c0c6f4103d6e9d915de5a46576cd7b4ec",
+      "sha256": "1004ec3eb1576f8c34194d03f0e98c593a0f0902cbc715d662ed8fb60ee67f06"
+    },
+    "monik/web/index.html": {
+      "git_blob": "eca85ab2e5c02f80d4267223eee26da16045a206",
+      "sha256": "d8c7fae08a53838865dc409e48493d03daca2eefcd0eebfc7acb79ca1caa1aaf"
+    },
+    "monik/web/style.css": {
+      "git_blob": "62be69120c1b7d35d501f148baf4f60c5f18145b",
+      "sha256": "980a62a28b1fcf1335db1e2f54b9219217fb43a33f5c380500363a714d7dd852"
+    },
+    "tests/test_core.py": {
+      "git_blob": "20071d226d8550053b1bc4134a63ddfbf42fc838",
+      "sha256": "aff85c049c1f6039a035e5df6836126013abf7a038188388347c8b2e9985bea4"
+    },
+    "tests/offline_browser.py": {
+      "git_blob": "f6d14143558bd105b87355a28d07dbff042403b3",
+      "sha256": "bc12fd7cf529a23d6c0b5ccdcae18adc80d178c0762f28ad20b1caf58fb0f897"
+    }
+  },
+  "artifacts": {
+    "merged-core.log": "9c9988751278898365a02ece391cad2dad5a03e55a790c62f3d37e4327b07f80",
+    "ui-main-fixtures.json": "78779d753b5ccb6698c64b71f736d4a8428fb141f2d8529e8b7a0121f43a2f73",
+    "merged-wire.json": "edc2e01b8c8ece40a3b64404cd455fcecc674eacf9f68d3b5ede9ef3151d2615",
+    "merged-ui/results.json": "bd0f92d0499d6d4ef95b36b77ad0930fa9fc46ac29a1de24da02c933ba2e0264"
+  },
+  "preserved_upstream_fix": {
+    "commit": "f8178622de24b6cc685b0b6f9e1a869d7c4dd56e",
+    "storage_blob": "26a100aab9eb0947df2c34e743555505efdaf06b",
+    "tests_blob": "381201820469f0b3781760e34b55924ed30d64f3"
+  }
+}

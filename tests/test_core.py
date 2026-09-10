@@ -79,7 +79,9 @@ class Local(unittest.TestCase):
     def test_conflicting_usage_first_canonical_preserved(self):
         row=rows('usage_deliveries.jsonl')[0];self.put(row,delivery='first')
         row['usage']['input_tokens']=1100;row['usage']['total_tokens']=1200;self.put(row,delivery='second')
-        self.assertEqual(self.store.usage({})['total_tokens'],1100)
+        self.assertIsNone(self.store.usage({})['total_tokens'])
+        self.assertEqual(self.store.usage({})['conflicts'],1)
+        with self.store.connect() as db: self.assertEqual(db.execute('SELECT total_tokens FROM response_usage').fetchone()[0],1100)
         self.assertEqual(len(self.store.events({'kind':'conflict'})['items']),1)
     def test_cumulative_epochs_do_not_inflate_usage(self):
         with self.store.connect(write=True) as db:
@@ -129,10 +131,10 @@ class Local(unittest.TestCase):
         self.assertEqual(self.store.events({'q':'" OR * "','search_mode':'substring'})['items'],[])
     def test_partial_then_complete_and_restart(self):
         path=self.source/'a.jsonl';a,b=encoded(record(1)),encoded(record(2));path.write_bytes(a+b[:-12])
-        c=self.collector([path]);c.tick();self.assertEqual(len(self.store.events({})['items']),1)
+        c=self.collector([path]);c.tick();self.assertEqual(len(self.store.events({'kind':'message:assistant'})['items']),1)
         self.assertIn('partial_line',[s['status'] for s in self.store.coverage()['sources']])
         with path.open('ab') as f:f.write(b[-12:])
-        c=self.collector([path]);c.tick();c.tick();self.assertEqual(len(self.store.events({})['items']),2)
+        c=self.collector([path]);c.tick();c.tick();self.assertEqual(len(self.store.events({'kind':'message:assistant'})['items']),2)
     def test_inode_rotation_and_overlap(self):
         path=self.source/'a.jsonl';path.write_bytes(encoded(record(1))+encoded(record(2)))
         c=self.collector([path]);c.tick();path.rename(self.source/'old.jsonl');path.write_bytes(encoded(record(2))+encoded(record(3)))
@@ -148,7 +150,7 @@ class Local(unittest.TestCase):
     def test_ambiguous_shared_file_not_attributed(self):
         path=self.source/'a.jsonl';path.write_bytes(encoded(record(1)))
         profiles=[{'name':n,'root_id':n,'files':[{'path':str(path),'thread_id':n}]*2} for n in ('astra','sol')]
-        c=self.collector([],profiles);c.tick();self.assertEqual(len(c.paths),0);self.assertEqual(len(self.store.events({})['items']),0)
+        c=self.collector([],profiles);c.tick();self.assertEqual(len(c.paths),0);self.assertEqual(len(self.store.events({'kind':'message:assistant'})['items']),0)
     def test_bad_line_unknown_schema_continue(self):
         path=self.source/'a.jsonl';path.write_bytes(b'{bad}\n'+encoded({'type':'future_enum_99','payload':{'value':'safe'}})+encoded(record(1)))
         c=self.collector([path]);c.tick();kinds={x['kind'] for x in self.store.events({})['items']};self.assertIn('parse_error',kinds);self.assertIn('unknown:future_enum_99',kinds);self.assertIn('message:assistant',kinds)
@@ -178,10 +180,10 @@ class Local(unittest.TestCase):
         def fail(db,event,provenance): original(db,event,provenance);raise sqlite3.OperationalError('database or disk is full')
         with patch.object(self.store,'put',side_effect=fail):
             with self.assertRaises(sqlite3.OperationalError):c.tick()
-        self.assertEqual(self.store.events({})['items'],[])
+        self.assertEqual(self.store.events({'kind':'message:assistant'})['items'],[])
         with self.store.connect() as db:
             state=json.loads(db.execute("SELECT state FROM cursors WHERE source LIKE 'tail:%'").fetchone()[0]);self.assertEqual(state['recent']['offset'],0);self.assertEqual(state['backfill']['offset'],0)
-        c.tick();self.assertEqual(len(self.store.events({})['items']),1)
+        c.tick();self.assertEqual(len(self.store.events({'kind':'message:assistant'})['items']),1)
     def test_backup_and_reopen(self):
         self.put(record(1));target=self.root/'backup.sqlite';self.store.backup(target);copy=Store(target)
         self.assertEqual(copy.events({})['items'][0]['uid'],self.store.events({})['items'][0]['uid'])
