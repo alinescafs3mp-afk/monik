@@ -6,3 +6,7 @@
 @media(prefers-reduced-motion:no-preference){button{transition:border-color .12s,background-color .12s}}
 
 .workspace-tools{margin:0 0 16px;gap:8px}.card-heading{flex-wrap:wrap}.workspace-tools .small{margin-left:auto}.event-thread{user-select:all}.compare summary{cursor:pointer;min-height:44px}@media(max-width:600px){.workspace-tools .small{width:100%;margin-left:0}}
+
+/* New graph tab uses the same local server and owner session. */
+.tabs .graph-nav-link{display:inline-flex;align-items:center;min-height:44px;padding:9px 15px;color:var(--accent);border:1px solid var(--border);border-radius:10px;white-space:nowrap}
+@media(max-width:600px){.tabs .graph-nav-link{justify-content:center;flex:1 0 30%;font-size:.87rem}}

@@ -220,4 +220,6 @@ def create_app(config,*,collect=True):
                         except TimeoutError: yield 'event: pulse\ndata: {}\n\n'
             finally: streams.discard(tag)
         return StreamingResponse(generate(),media_type='text/event-stream',headers={'X-Accel-Buffering':'no','Cache-Control':'no-store'})
+    from .chart_api import router as chart_router
+    app.include_router(chart_router)
     return app

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light"><title>Расход токенов · monik</title>
+  <link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/token-graph.css">
+  <script src="/token-graph.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/" aria-label="monik, главная"><span class="brand-icon">◉</span> monik <span class="brand-sub">CODEX OBSERVATORY</span></a>
+  <div class="top-actions"><span id="graph-connection" class="pill" role="status">Подключение</span><button id="graph-theme" aria-label="Сменить тему">◐</button></div>
+</header>
+<main class="graph-main">
+  <nav class="tabs" aria-label="Навигация"><a class="graph-tab" href="/">Обзор и история</a><a class="graph-tab" href="/token-graph" aria-current="page">График токенов</a></nav>
+  <div class="page-heading">
+    <div><div class="eyebrow">ЛОКАЛЬНАЯ ТЕЛЕМЕТРИЯ / ТОЛЬКО ЧТЕНИЕ</div><h1>Расход токенов во времени</h1><p class="muted">Отдельный ряд для каждого Codex. Пики, темп и измеренный расход за период.</p></div>
+    <div class="heading-badges"><span class="pill">БЕЗ ВЫЗОВОВ МОДЕЛЕЙ</span><span id="graph-demo" class="pill" hidden>ДЕМОНСТРАЦИЯ</span></div>
+  </div>
+  <div id="graph-error" class="error" role="alert" hidden></div>
+  <div id="graph-login" class="notice" hidden>Для просмотра нужен вход владельца. <a href="/">Открыть страницу входа</a>. После входа вернись во вкладку «График токенов».</div>
+  <section class="panel graph-toolbar" aria-label="Настройки графика">
+    <div><div class="metric-label">Последние часы</div><div id="graph-periods" class="button-row" role="group" aria-label="Период графика">
+      <button data-hours="24" aria-pressed="false">24 ч</button><button data-hours="12" aria-pressed="false">12 ч</button><button data-hours="6" aria-pressed="true">6 ч</button><button data-hours="3" aria-pressed="false">3 ч</button><button data-hours="2" aria-pressed="false">2 ч</button><button data-hours="1" aria-pressed="false">1 ч</button>
+    </div></div>
+    <label>Показатель<select id="graph-metric">
+      <option value="total_tokens">Всего: input + output</option><option value="input_tokens">Ввод</option><option value="output_tokens">Вывод</option><option value="cached_input_tokens">Ввод из кэша (часть input)</option><option value="uncached_input_tokens">Ввод без кэша</option><option value="reasoning_output_tokens">Reasoning (часть output)</option>
+    </select></label>
+    <div class="button-row"><button id="graph-pause" aria-pressed="false">Пауза экрана</button><button id="graph-refresh">Обновить</button></div>
+  </section>
+  <p id="graph-paused" class="notice" role="status" hidden>Экран приостановлен. Сервер продолжает собирать данные; Codex работает независимо.</p>
+  <section id="graph-cards" class="cards graph-cards" aria-label="Измерения профилей"><div class="card muted">Загружается измеренный расход…</div></section>
+  <section class="panel graph-plot-panel" aria-label="График расхода">
+    <div class="section-heading"><div><h2>Темп расхода</h2><p id="graph-step" class="small muted">Токенов в минуту · шаг зависит от периода</p></div><div id="graph-legend" class="button-row" role="group" aria-label="Видимые профили"></div></div>
+    <div class="graph-plot-wrap"><svg id="graph-svg" viewBox="0 0 960 320" role="img" aria-labelledby="graph-title graph-description"><title id="graph-title">Расход токенов по профилям</title><desc id="graph-description">Средний темп в каждом временном интервале. Для точных значений используй ползунок и таблицу ниже.</desc></svg><div id="graph-empty" class="graph-empty" hidden>В этом окне нет подходящих измерений.<br><span class="small">Это не означает нулевой расход.</span></div></div>
+    <div id="graph-inspector" class="graph-inspector" role="status" aria-live="polite">Наведи указатель на график или выбери интервал ползунком.</div>
+    <label class="graph-slider-label">Интервал для подробностей<input id="graph-slider" type="range" min="0" max="1" value="1" aria-label="Выбрать интервал графика"></label>
+    <div class="graph-footline"><span id="graph-updated">Снимок ещё не получен</span><span>Часовой пояс браузера: <span id="graph-timezone"></span></span></div>
+  </section>
+  <p class="small muted graph-explanation">Точки относятся ко времени сохранённых ответов, а не к каждому шагу генерации. Кэш входит во ввод, reasoning входит в вывод. Разрывы линии означают отсутствие пригодных записей, не доказанный простой. Крайние корзины могут быть неполными; темп нормирован на полный шаг, без экстраполяции. Сумма за период включает только подтверждённые измерения.</p>
+  <p id="graph-quality" class="notice" hidden></p>
+  <details class="panel graph-table"><summary>Точные значения и качество данных</summary><p class="small muted">Показатель совпадает с выбранным над графиком. Пустое измерение не заменяется нулём. Профиль включает отнесённые к нему корневые и дочерние сессии.</p><div class="table-wrap"><table><thead><tr><th scope="col">Интервал</th><th scope="col">Профиль</th><th scope="col">Токены</th><th scope="col">Токенов / мин</th><th scope="col">Ответы</th><th scope="col">Состояние</th></tr></thead><tbody id="graph-table-body"></tbody></table></div></details>
+  <footer class="footer"><span>monik · собственная история, не биллинг провайдера</span><span>Частичное покрытие · закрытые рассуждения не собираются</span></footer>
+</main>
+</body></html>
