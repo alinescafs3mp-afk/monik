@@ -120,7 +120,7 @@ class Queries(UsageQueries):
             elif key not in previous or previous[key] is None: status='baseline';counts['baselines']+=1;previous[key]=value
             else:
                 delta=value-previous[key];previous[key]=value
-                if delta<0: status='negative_change';counts['negative_changes']+=1
+                if delta<0: status='negative_change';counts['negative_changes']+=1;previous[key]=None
                 elif delta==0: status='repeat';counts['repeats']+=1
                 else: status='positive_delta';counts['known_positive_delta']+=delta
             items.append({**self.public_event(row),**d,'delta':delta,'status':status})
