@@ -236,7 +236,7 @@ def _screen(screen,fetcher,config,page,params):
                 't: исторический момент. l: вернуться к LIVE.',
                 '/: буквальный поиск. Esc: назад / очистить поиск.',
                 'q: выход. Сервер и Codex продолжают работу.',
-                '? или Esc: закрытьть справку.']
+                '? или Esc: закрыть справку.']
         if page=='activity' and data.get('items') and not help_open:
             selected=min(selected,len(data['items'])-1)
             draw(3,error or f'Выбрано событие {selected+1}/{len(data["items"])}: {data["items"][selected]["kind"]} | j/k выбрать, Enter открыть')
