@@ -14,7 +14,9 @@ class UsageQueries:
         # Text/kind filters belong to the timeline, not unrelated usage payloads.
         selection = {k: v for k, v in params.items() if k not in ('q', 'kind', 'search_mode')}
         where, values = self.filters(selection, include_kind=False)
-        conflict_clock = 'ingested_at' if params.get('view') == 'knowledge' else 'time'
+        # A conflict is an observer finding. Its source record may describe an
+        # older response; never backdate detection to that response timestamp.
+        conflict_clock = 'ingested_at'
         conflict_where = "c.kind='conflict' AND json_extract(c.data,'$.canonical_uid')=e.uid"
         conflict_values = []
         for name in ('at', 'until'):
@@ -53,6 +55,7 @@ class UsageQueries:
         result.update(
             groups=groups[:2000], groups_capped=len(groups) > 2000,
             coverage='partial',
+            conflict_time_basis='observer_ingestion',
             formula='total=input+output; cached is within input; reasoning is within output; disputed measurements excluded',
             dedup_key='profile,thread_id,response_id',
             filter_scope='profile,thread_id,model,time; q and kind apply only to the timeline',
