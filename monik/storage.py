@@ -1,8 +1,10 @@
 """Private Observatory DB. Never receives a Codex database path."""
 from __future__ import annotations
 import json
+import fcntl
 import os
 import sqlite3
+import stat
 import time
 from pathlib import Path
 from contextlib import contextmanager
@@ -18,6 +20,7 @@ CREATE INDEX IF NOT EXISTS events_profile_time ON events(profile,time,id);
 CREATE INDEX IF NOT EXISTS events_thread_kind_time ON events(profile,thread_id,kind,time,id);
 CREATE INDEX IF NOT EXISTS events_kind_time ON events(kind,time,id);
 CREATE INDEX IF NOT EXISTS events_ingested ON events(ingested_at,id);
+CREATE INDEX IF NOT EXISTS events_conflict_uid ON events(json_extract(data,'$.canonical_uid')) WHERE kind='conflict';
 CREATE TABLE IF NOT EXISTS provenance(event_id INTEGER NOT NULL REFERENCES events(id),delivery TEXT NOT NULL,
  source TEXT NOT NULL,epoch TEXT NOT NULL,offset INTEGER,raw_sha256 TEXT,observed_at REAL,ingested_at REAL NOT NULL,
  PRIMARY KEY(event_id,delivery));
@@ -38,28 +41,58 @@ PRAGMA user_version=1;
 
 class Store(Queries):
     def __init__(self,path: str|Path):
-        self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        self.path=Path(path).absolute()
+        if any(p.is_symlink() for p in (self.path.parent,*self.path.parent.parents)):
+            raise ValueError('Own database directory must not use symbolic links')
+        self.path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        self._check_files()
         with self.connect(write=True) as db:
             if db.execute('PRAGMA user_version').fetchone()[0] not in (0,1): raise RuntimeError('Unsupported own database version')
             db.execute('PRAGMA journal_mode=WAL');db.executescript(SCHEMA)
             if db.execute('PRAGMA quick_check').fetchone()[0]!='ok': raise RuntimeError('Own database failed quick_check')
         os.chmod(self.path,0o600)
 
+    def _check_files(self):
+        for suffix in ('','-wal','-shm','-journal'):
+            p=Path(str(self.path)+suffix)
+            try: s=p.lstat()
+            except FileNotFoundError: continue
+            if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid():
+                raise ValueError('Own database and sidecars must be regular, single-link files owned by this user')
+
     @contextmanager
     def connect(self,write=False):
-        db=sqlite3.connect(str(self.path) if write else self.path.resolve().as_uri()+'?mode=ro',uri=not write,timeout=1)
-        db.row_factory=sqlite3.Row;db.execute('PRAGMA foreign_keys=ON');db.execute('PRAGMA busy_timeout=1000')
-        if not write:
-            db.execute('PRAGMA query_only=ON');deadline=time.monotonic()+3
-            db.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
-        else: db.execute('PRAGMA synchronous=FULL')
+        self._check_files()
+        lock=None;db=None
         try:
+            # Serialize every monik write connection, including startup and backup
+            # schema checks, across processes. Read-only projections remain parallel.
+            if write:
+                lock=os.open(str(self.path)+'.write-lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+                info=os.fstat(lock)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.geteuid():
+                    raise ValueError('Invalid own write-lock file')
+                deadline=time.monotonic()+1
+                while True:
+                    try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+                    except BlockingIOError:
+                        if time.monotonic()>=deadline: raise sqlite3.OperationalError('Own database writer is busy')
+                        time.sleep(.02)
+            db=sqlite3.connect(str(self.path) if write else self.path.resolve().as_uri()+'?mode=ro',uri=not write,timeout=1)
+            db.row_factory=sqlite3.Row;db.execute('PRAGMA foreign_keys=ON');db.execute('PRAGMA busy_timeout=1000')
+            if not write:
+                db.execute('PRAGMA query_only=ON');deadline=time.monotonic()+3
+                db.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
+                db.execute('BEGIN')
+            else: db.execute('PRAGMA synchronous=FULL')
             yield db
             if write: db.commit()
         except BaseException:
-            if write: db.rollback()
+            if db is not None and write: db.rollback()
             raise
-        finally: db.close()
+        finally:
+            if db is not None: db.close()
+            if lock is not None: os.close(lock)
 
     def put(self,db,event,provenance):
         now=provenance.get('ingested_at',time.time());uid=digest([1,event['profile'],event['thread_id'],event['kind'],event['native']])
