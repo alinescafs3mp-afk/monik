@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id), F = ['profile', 'thread_id', 'model', 'kind', 'q', 'search_mode', 'view', 'since', 'until', 'at'];
-const S = { tab: 'overview', params: {}, cursor: 0, es: null, authed: false, past: false, pending: 0, before: null, next: null, follow: true, version: 0, timer: null, inflight: false, again: false, detail: null, paused: false, history: [], forceQueued: false, labels: {} };
+const S = { tab: 'overview', params: {}, cursor: 0, es: null, authed: false, past: false, pending: 0, before: null, next: null, follow: true, version: 0, timer: null, inflight: false, again: false, detail: null, paused: false, history: [], forceQueued: false, labels: {}, profileCatalogue: [] };
 const number = v => typeof v !== 'number' || !Number.isFinite(v) ? 'нет измерения' : new Intl.NumberFormat('ru-RU').format(v);
 const percent = v => typeof v === 'number' && Number.isFinite(v) ? number(v) + '%' : 'нет измерения';
 const date = v => v === null || v === undefined ? 'время неизвестно' : new Date(typeof v === 'number' ? v * 1000 : v).toLocaleString('ru-RU');
@@ -34,8 +34,8 @@ async function api(path, extra = {}, options) { const r = await fetch('/api/v1/'
 } return r.json(); }
 function showError(e) { $('error').textContent = String(e.message || e); $('error').hidden = false; }
 function showLogin() { S.authed = false; if (S.es)
-    S.es.close(); S.es = null; S.version++; S.detail = null; if ($('detail').open)
-    $('detail').close(); $('content').replaceChildren(); $('detail-body').replaceChildren(); $('workspace').hidden = true; $('login-panel').hidden = false; $('logout').hidden = true; $('connection').textContent = 'Нужен вход'; }
+    S.es.close(); S.es = null; S.version++; S.detail = null; S.profileCatalogue = []; S.params = {}; if ($('detail').open)
+    $('detail').close(); $('content').replaceChildren(); $('detail-body').replaceChildren(); const select = $('profile'); select.replaceChildren(); const all = el('option', '', 'Все профили'); all.value = ''; select.append(all); syncFilters(); $('error').textContent = ''; $('error').hidden = true; $('workspace').hidden = true; $('login-panel').hidden = false; $('logout').hidden = true; $('connection').textContent = 'Нужен вход'; }
 function showWorkspace() { S.authed = true; $('workspace').hidden = false; $('login-panel').hidden = true; $('logout').hidden = false; }
 function markMode() { S.past = Boolean(S.params.at); $('notice').hidden = !S.past; $('notice').textContent = S.past ? `ПРОШЛОЕ · ${date(S.params.at)} · ${S.params.view === 'knowledge' ? 'только известное монитору на тот момент' : 'по времени событий, включая поздний backfill'}. Входящие события не меняют T.` : ''; $('filter-count').textContent = Object.entries(S.params).filter(([k, v]) => v && k !== 'view' && k !== 'search_mode').length ? 'Фильтры активны' : ''; }
 function evidenceButton(uid, text = 'Источник') { return button(text, () => openDetail(uid), 'linklike'); }
@@ -224,7 +224,9 @@ async function refresh(force = false) {
                 return;
             S.cursor = Math.max(S.cursor, o.cursor);
             $('demo-badge').hidden = !o.demo;
-            syncProfiles(o.profiles);
+            if (!S.params.profile)
+                setProfileCatalogue(o.profiles);
+            syncProfiles();
             node = renderOverview(o, l, t);
         }
         else if (S.tab === 'activity') {
@@ -276,6 +278,7 @@ function canRefresh() { return !S.paused && !S.past && !document.hidden && !$('d
 function queueRefresh(force = false) { S.forceQueued ||= force; if (S.timer !== null)
     return; S.timer = setTimeout(() => { S.timer = null; const forced = S.forceQueued; S.forceQueued = false; if (forced || canRefresh())
     refresh(forced); }, 250); }
+async function loadProfileCatalogue() { const overview = await api('overview', { profile: null }); S.cursor = Math.max(S.cursor, overview.cursor); setProfileCatalogue(overview.profiles); syncProfiles(); return overview; }
 function connect() { if (!S.authed)
     return; if (S.es)
     S.es.close(); const es = new EventSource('/api/v1/stream?after=' + S.cursor); S.es = es; es.onopen = () => { $('connection').textContent = '● Соединение LIVE'; $('connection').className = 'pill ok'; }; es.onerror = () => { $('connection').textContent = 'Переподключение'; $('connection').className = 'pill warn'; if (Date.now() - (S.authCheck || 0) > 5000) {
@@ -362,6 +365,7 @@ $('login-form').addEventListener('submit', async (e) => { e.preventDefault(); tr
     $('token').value = '';
     $('login-error').textContent = '';
     showWorkspace();
+    await loadProfileCatalogue();
     await refresh(true);
     openHash();
 }
@@ -499,8 +503,7 @@ window.addEventListener('hashchange', () => { openHash(); refresh(true); });
 };
     Object.assign(kinds, S.labels.events);
     Object.assign(states, S.labels.states);
-    const o = await api('overview');
-    S.cursor = o.cursor;
+    await loadProfileCatalogue();
     showWorkspace();
     openHash();
     await refresh(true);
@@ -508,12 +511,12 @@ window.addEventListener('hashchange', () => { openHash(); refresh(true); });
 catch {
     showLogin();
 } })();
-function syncProfiles(profiles) { const selected = S.params.profile || ''; const select = $('profile'); if (select.options.length === profiles.length + 1 && profiles.every(p => Array.from(select.options).some(o => o.value === p.profile)))
-    return; select.replaceChildren(); const all = el('option', '', 'Все профили'); all.value = ''; select.append(all); for (const p of profiles) {
-    const o = el('option', '', names[p.profile] || p.profile);
-    o.value = p.profile;
+function setProfileCatalogue(profiles) { const seen = new Set(); S.profileCatalogue = profiles.filter(p => p && typeof p.profile === 'string' && !seen.has(p.profile) && seen.add(p.profile)).map(p => p.profile); }
+function syncProfiles() { const selected = S.params.profile || ''; const select = $('profile'); select.replaceChildren(); const all = el('option', '', 'Все профили'); all.value = ''; select.append(all); for (const profile of S.profileCatalogue) {
+    const o = el('option', '', names[profile] || profile);
+    o.value = profile;
     select.append(o);
-} select.value = selected; }
+} if (selected && !S.profileCatalogue.includes(selected)) { const unknown = el('option', '', `Неизвестный профиль: ${selected}`); unknown.value = selected; select.append(unknown); } select.value = selected; }
 $('pause').onclick = () => { S.paused = !S.paused; $('pause').textContent = S.paused ? 'Продолжить обновление' : 'Приостановить экран'; $('pause').setAttribute('aria-pressed', String(S.paused)); $('pause-note').hidden = !S.paused; if (!S.paused)
     queueRefresh(true); };
 $('refresh').onclick = () => refresh(true);

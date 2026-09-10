@@ -7,6 +7,7 @@ import stat
 import re
 import os
 import secrets
+import tempfile
 from pathlib import Path
 
 
@@ -14,6 +15,73 @@ def expand(path): return Path(path).expanduser().absolute()
 
 def forbidden(path):
     return any(part.casefold()=='auth.json' or re.sub(r'[ _-]+','',part).casefold()=='pandorabox' for part in Path(path).parts)
+
+
+def _reject_symlink_components(path):
+    path=expand(path)
+    for part in (path,*path.parents):
+        try:
+            if part.is_symlink(): raise ValueError('Private monik paths must not use symbolic links')
+        except OSError as exc:
+            raise ValueError('Cannot verify private monik path') from exc
+
+
+def private_directory(path,*,create=False):
+    """Validate one monik-owned private directory without changing shared parents."""
+    path=expand(path);_reject_symlink_components(path)
+    if create: path.mkdir(parents=True,exist_ok=True,mode=0o700)
+    try: info=path.lstat()
+    except FileNotFoundError: raise ValueError('Private monik directory does not exist') from None
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode & 0o077:
+        raise ValueError('Private monik directory must be owner-only (0700)')
+    return path
+
+
+def private_file(path,*,maximum=None,label='Private monik file'):
+    """Reject links, aliases, foreign ownership and group/world permissions."""
+    path=expand(path);_reject_symlink_components(path)
+    try: info=path.lstat()
+    except FileNotFoundError: raise
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or
+            info.st_uid!=os.geteuid() or info.st_mode & 0o077):
+        raise ValueError(f'{label} must be an owner-only regular file (0600), not a link')
+    if maximum is not None and info.st_size>maximum: raise ValueError(f'{label} is too large')
+    return path
+
+
+def atomic_private_write(path,data,*,replace=True):
+    """Durably replace an own file through a unique 0600 temporary file."""
+    path=expand(path);parent=private_directory(path.parent,create=True)
+    old=None
+    try:
+        old=private_file(path).lstat()
+        if not replace: raise FileExistsError(path)
+    except FileNotFoundError:
+        pass
+    fd,name=tempfile.mkstemp(prefix='.'+path.name+'.',suffix='.tmp',dir=parent)
+    temp=Path(name)
+    try:
+        os.fchmod(fd,0o600)
+        with os.fdopen(fd,'wb') as stream:
+            stream.write(data);stream.flush();os.fsync(stream.fileno())
+        if old is not None:
+            current=private_file(path).lstat()
+            if (current.st_dev,current.st_ino)!=(old.st_dev,old.st_ino):
+                raise ValueError('Private monik file changed during atomic update')
+        if old is not None and replace:
+            os.replace(temp,path)
+        else:
+            os.link(temp,path,follow_symlinks=False);temp.unlink()
+        directory=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    except BaseException:
+        try: os.close(fd)
+        except OSError: pass
+        try: temp.unlink()
+        except FileNotFoundError: pass
+        raise
+    return path
 
 def defaults(home=None):
     home=Path(home or Path.home());runtime=home/'.jericho/runtime'
@@ -28,11 +96,8 @@ def defaults(home=None):
 
 
 def load(path):
-    path=expand(path)
-    s=path.lstat()
-    if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid() or s.st_mode & 0o077:
-        raise ValueError('Configuration must be an owner-only regular file (0600), not a link')
-    if path.stat().st_size>131072: raise ValueError('Configuration too large')
+    path=expand(path);private_directory(path.parent)
+    path=private_file(path,maximum=131072,label='Configuration')
     config=json.loads(path.read_text())
     if not isinstance(config,dict): raise ValueError('Configuration must be a JSON object')
     config['_path']=str(path)
@@ -98,12 +163,24 @@ def load(path):
 
 def init(path,home=None):
     path=expand(path)
-    if path.exists(): return path
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        config=None
+    else:
+        config=load(path)
+    if config is not None:
+        token=private_file(config['token_file'],maximum=512,label='Owner token').read_text().strip()
+        if not 32<=len(token)<=256: raise ValueError('Owner token must contain 32..256 characters')
+        return path
     path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    os.chmod(path.parent,0o700);private_directory(path.parent)
     config=defaults(home);token=path.parent/'owner-token.txt';config['token_file']=str(token)
-    if not token.exists():
-        fd=os.open(token,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-        with os.fdopen(fd,'w') as f: f.write(secrets.token_urlsafe(36)+'\n')
-    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-    with os.fdopen(fd,'w') as f: json.dump(config,f,ensure_ascii=False,indent=2);f.write('\n')
+    try:
+        value=private_file(token,maximum=512,label='Owner token').read_text().strip()
+        if not 32<=len(value)<=256: raise ValueError('Owner token must contain 32..256 characters')
+    except FileNotFoundError:
+        atomic_private_write(token,(secrets.token_urlsafe(36)+'\n').encode(),replace=False)
+    encoded=(json.dumps(config,ensure_ascii=False,indent=2)+'\n').encode()
+    atomic_private_write(path,encoded,replace=False)
     return path

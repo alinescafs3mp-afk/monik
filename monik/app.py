@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import sqlite3
+import stat
 import time
 from collections import defaultdict,deque
 from contextlib import asynccontextmanager
@@ -16,7 +17,7 @@ from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import FileResponse,JSONResponse,StreamingResponse,Response
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .collector import Collector
-from .config import expand
+from .client import read_token
 from .model import timestamp,dumps
 from .storage import Store
 
@@ -49,10 +50,7 @@ def query(request):
 
 
 def create_app(config,*,collect=True):
-    token_path=expand(config['token_file'])
-    if token_path.stat().st_mode & 0o077 or token_path.stat().st_uid!=os.geteuid(): raise ValueError('Owner token must be owned by service user, mode 0600')
-    token=token_path.read_text().strip()
-    if not 32<=len(token)<=256: raise ValueError('Owner token must contain 32..256 characters')
+    token=read_token(config['token_file'])
     token_hash=hashlib.sha256(token.encode()).digest();del token
     data=Path(config['data_dir']);data.mkdir(mode=0o700,parents=True,exist_ok=True)
     if data.stat().st_mode & 0o077: raise ValueError('Own data directory must have permissions 0700')
@@ -74,7 +72,13 @@ def create_app(config,*,collect=True):
 
     @asynccontextmanager
     async def lifespan(app):
-        lock=open(data/'collector.lock','a')
+        lock_path=data/'collector.lock'
+        try: fd=os.open(lock_path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+        except OSError as exc: raise ValueError('Collector lock must be a regular file, not a symbolic link') from exc
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.geteuid() or info.st_mode & 0o077:
+            os.close(fd);raise ValueError('Collector lock must be an owner-only regular file (0600)')
+        lock=os.fdopen(fd,'a')
         try:
             fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:
@@ -161,7 +165,12 @@ def create_app(config,*,collect=True):
         result=store.overview(query(request),collector.profiles);result['demo']=bool(config.get('demo'));return result
     @app.get('/api/v1/events')
     @app.get('/api/v1/search')
-    def events(request:Request): return store.events(query(request))
+    def events(request:Request):
+        try: return store.events(query(request))
+        except ValueError as exc:
+            if str(exc)=='Pagination cursor no longer exists; refresh the timeline':
+                raise HTTPException(400,str(exc)) from exc
+            raise
     @app.get('/api/v1/events/{uid}')
     def detail(uid:str,request:Request):
         if len(uid)!=64 or any(x not in '0123456789abcdef' for x in uid): raise HTTPException(400,'Invalid event identifier')

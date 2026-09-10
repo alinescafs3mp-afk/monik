@@ -37,7 +37,7 @@ window.EventSource=class{
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--output',default='/tmp/monik-graph-browser');args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--output',default='/tmp/monik-graph-browser');ap.add_argument('--chromium',default='/usr/bin/chromium');args=ap.parse_args()
     out=Path(args.output);out.mkdir(parents=True,exist_ok=True);checks=[];errors=[];requests=[];native={'status':'not_run'}
     def check(name,condition,detail=None):
         checks.append({'name':name,'ok':bool(condition),'detail':detail})
@@ -75,11 +75,17 @@ def main():
             client=TestClient(app,base_url=origin)  # Server already owns the one app lifespan.
             with sync_playwright() as pw:
                 client.post('/api/v1/login',json={'token':token},headers={'Origin':origin}).raise_for_status()
-                browser=pw.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox'])
-                page=browser.new_page(viewport={'width':1440,'height':1100})
+                browser=pw.chromium.launch(executable_path=args.chromium,headless=True,args=['--no-sandbox'])
+                page=browser.new_page(viewport={'width':1440,'height':1100});native_requests=[];page.on('request',lambda request:native_requests.append(request.url))
                 try:
-                    page.goto(origin+'/token-graph',timeout=6000)
-                    native={'status':'navigation_passed','note':'Navigation only; comprehensive native login/SSE acceptance remains separate.'}
+                    page.goto(origin,timeout=6000);page.locator('#login-panel').wait_for(state='visible')
+                    page.fill('#token',token);page.get_by_role('button',name='Открыть обсерваторию').click();page.locator('#content .cards').wait_for()
+                    page.goto(origin+'/token-graph',timeout=6000);page.locator('#graph-cards h2').first.wait_for(timeout=6000)
+                    first_native=page.locator('#graph-cards').inner_text();record('NATIVE-APPEND','astra',time.time()-2,3000)
+                    page.wait_for_function("old => document.querySelector('#graph-cards').innerText !== old",arg=first_native,timeout=5000)
+                    if not all(url.startswith(origin) for url in native_requests):raise AssertionError('Native graph requested an external origin')
+                    native={'status':'full_passed','login':True,'authenticated_series':True,'sse_commit':True,
+                            'only_local_requests':all(url.startswith(origin) for url in native_requests)}
                 except Exception as exc:native={'status':'blocked_or_unavailable','error':str(exc)}
                 page.close();page=browser.new_page(viewport={'width':1440,'height':1100});page.on('pageerror',lambda e:errors.append(str(e)))
                 def request(url):

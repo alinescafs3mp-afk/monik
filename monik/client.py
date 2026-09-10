@@ -22,7 +22,8 @@ class NoRedirect(HTTPRedirectHandler):
 
 def read_token(path):
     path=expand(path)
-    fd=open_regular(path)
+    try: fd=open_regular(path)
+    except OSError as exc: raise ValueError('Файл токена должен быть обычным файлом без символических ссылок.') from exc
     try:
         s=os.fstat(fd)
         if s.st_mode & 0o077 or s.st_uid!=os.geteuid() or s.st_nlink!=1 or s.st_size>512:

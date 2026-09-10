@@ -155,7 +155,8 @@
   async function refresh(force = false) {
     if ((!force && (state.paused || document.hidden)) || !state.authenticated) return;
     if (state.controller) {state.dirty = true; return;}
-    const controller = new AbortController(), generation = state.generation;
+    const controller = new AbortController(), generation = state.generation; let timedOut = false;
+    const timeout = setTimeout(() => {timedOut = true; controller.abort();}, 5000);
     state.controller = controller; state.dirty = false;
     try {
       const r = await fetch('/api/v1/usage-series?hours=' + state.hours, {credentials: 'same-origin', signal: controller.signal});
@@ -170,11 +171,13 @@
       state.data = data; paint(); $('graph-error').hidden = true; $('graph-login').hidden = true;
       if (!state.stream) connect();
     } catch (e) {
-      if (e.name !== 'AbortError' && generation === state.generation) {
+      if ((e.name !== 'AbortError' || timedOut) && generation === state.generation) {
+        if (timedOut) e = Error('сервер не ответил за 5 секунд');
         $('graph-error').textContent = 'Не удалось обновить график: ' + e.message + '. Последний снимок сохранён на экране.';
         $('graph-error').hidden = false; badge('Данные устарели', true);
       }
     } finally {
+      clearTimeout(timeout);
       if (state.controller === controller) state.controller = null;
       if (state.dirty) schedule();
     }

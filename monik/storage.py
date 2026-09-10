@@ -61,7 +61,7 @@ class Store(Queries):
             p=Path(str(self.path)+suffix)
             try: s=p.lstat()
             except FileNotFoundError: continue
-            if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid():
+            if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.geteuid() or s.st_mode & 0o077:
                 raise ValueError('Own database and sidecars must be regular, single-link files owned by this user')
 
     @contextmanager
@@ -78,7 +78,7 @@ class Store(Queries):
             if write:
                 lock=os.open(str(self.path)+'.write-lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
                 info=os.fstat(lock)
-                if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.geteuid():
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.geteuid() or info.st_mode & 0o077:
                     raise ValueError('Invalid own write-lock file')
                 deadline=time.monotonic()+1
                 while True:
@@ -106,8 +106,21 @@ class Store(Queries):
 
     def put(self,db,event,provenance):
         now=provenance.get('ingested_at',time.time());uid=digest([1,event['profile'],event['thread_id'],event['kind'],event['native']])
-        data=dumps(event['data']);hashed=digest(data);old=db.execute('SELECT id,hash FROM events WHERE uid=?',(uid,)).fetchone()
-        if old and old['hash']!=hashed:
+        data=dumps(event['data']);hashed=digest(data);old=db.execute('SELECT id,hash,data,kind FROM events WHERE uid=?',(uid,)).fetchone()
+        same_reset=False
+        if old and old['hash']!=hashed and old['kind']==event['kind']=='limit':
+            try:
+                before=json.loads(old['data']);after=json.loads(data)
+                for item in (before,after):
+                    raw=item.get('raw')
+                    if isinstance(raw,dict):
+                        for key in ('resets_at','resetsAt'):
+                            value=raw.get(key)
+                            if type(value) in (int,float): raw[key]=float(value)
+                same_reset=dumps(before)==dumps(after)
+            except (ValueError,TypeError,json.JSONDecodeError):
+                same_reset=False
+        if old and old['hash']!=hashed and not same_reset:
             conflict={**event,'kind':'conflict','native':uid+':'+hashed,'data':{'canonical_uid':uid,'incoming':event['data'],'policy':'first_canonical_preserved'},'text':'Source disagreement; original canonical metric retained'}
             self.put(db,conflict,{**provenance,'delivery':provenance['delivery']+':conflict'})
         if old: eid=old['id']

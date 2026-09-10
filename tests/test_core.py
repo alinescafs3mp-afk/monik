@@ -258,6 +258,7 @@ class API(unittest.TestCase):
         self.assertNotEqual(self.client.get('/../../etc/passwd').status_code,200)
         self.assertEqual(self.client.get('/api/v1/events?limit=999999').status_code,400)
         self.assertEqual(self.client.get('/api/v1/events?at=2026-09-09').status_code,400)
+        self.assertEqual(self.client.get('/api/v1/events?before=9223372036854775806').status_code,400)
     def test_api_contract_and_detail(self):
         self.login()
         for name in ('overview','events','search','usage','limits','cumulative','threads','assignments','coverage','health/sources','export'):

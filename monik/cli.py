@@ -4,20 +4,17 @@ import argparse
 import json
 import os
 import secrets
-import sqlite3
 import sys
 from datetime import datetime,timezone,timedelta
 from pathlib import Path
-from .config import init,load,expand,defaults
+from .config import atomic_private_write,init,load,expand,defaults,private_directory
 from .model import dumps
 
 DEFAULT=str(Path.home()/'.config/monik/config.json')
 
 def write_config(path,value):
-    path=expand(path);tmp=path.with_suffix('.tmp')
-    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
-    with os.fdopen(fd,'w') as f: json.dump(value,f,ensure_ascii=False,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
-    os.replace(tmp,path)
+    encoded=(json.dumps(value,ensure_ascii=False,indent=2)+'\n').encode()
+    atomic_private_write(path,encoded)
 
 
 def make_demo(directory,port=8866):
@@ -46,10 +43,12 @@ def make_demo(directory,port=8866):
 def serve(path):
     if os.geteuid()==0: raise ValueError('Run the service as your ordinary user, never root')
     os.umask(0o077);config=load(path)
-    data=Path(config['data_dir']);data.mkdir(parents=True,exist_ok=True,mode=0o700)
-    if data.stat().st_mode & 0o077: raise ValueError('Own data directory must have mode 0700')
-    temp=data/'tmp';temp.mkdir(exist_ok=True,mode=0o700)
-    os.environ['TMPDIR']=str(temp);sys.dont_write_bytecode=True
+    data=private_directory(config['data_dir'],create=True)
+    temp=private_directory(data/'tmp',create=True)
+    # SQLite chooses its temp directory when its native module is initialized.
+    # Set both variables before importing app/storage so Landlock never drives a
+    # temporary write into /tmp or /var/tmp outside monik's own data directory.
+    os.environ['TMPDIR']=os.environ['SQLITE_TMPDIR']=str(temp);sys.dont_write_bytecode=True
     from .sandbox import enforce
     config['landlock_abi']=enforce(data)
     from .app import create_app
@@ -67,6 +66,13 @@ def main():
         if name=='backup': cmd.add_argument('target')
         if name=='roots': cmd.add_argument('--astra');cmd.add_argument('--sol')
     demo=sub.add_parser('demo');demo.add_argument('--directory',default=str(Path.home()/'.local/share/monik-demo'));demo.add_argument('--port',type=int,default=8866);demo.add_argument('--prepare-only',action='store_true')
+    tui=sub.add_parser('tui',help='Открыть терминальный read-only интерфейс')
+    tui.add_argument('--config',default=DEFAULT)
+    tui.add_argument('--once',action='store_true',help='Напечатать один снимок без интерактивного терминала')
+    tui.add_argument('--page',choices=('overview','activity','tokens','limits','tree','quality'),default='overview')
+    tui.add_argument('--profile',help='Точное имя профиля из конфигурации monik')
+    tui.add_argument('--at',help='Исторический момент ISO 8601 с часовым поясом')
+    tui.add_argument('--ca-file',help='Публичный CA для HTTPS-сервера monik')
     args=parser.parse_args()
     try:
         if args.command=='init': print('Конфигурация:',init(args.config));return
@@ -76,8 +82,16 @@ def main():
             return
         config=load(args.config)
         if args.command=='serve': serve(args.config)
-        elif args.command=='token': print(expand(config['token_file']).read_text().strip())
+        elif args.command=='tui':
+            # Import curses only for this subcommand; every other CLI path stays usable
+            # in environments without a terminal implementation.
+            from .tui import run
+            run(config,once=args.once,page=args.page,profile=args.profile,at=args.at,ca_file=args.ca_file)
+        elif args.command=='token':
+            from .client import read_token
+            print(read_token(config['token_file']))
         elif args.command=='doctor':
+            import sqlite3
             db=sqlite3.connect(':memory:');db.execute('CREATE VIRTUAL TABLE fts_test USING fts5(text)');db.close()
             from .collector import read_json
             profiles=[]
@@ -98,7 +112,13 @@ def main():
                     if len(value)>128 or any(c.isspace() for c in value): raise ValueError('Invalid thread identifier')
                     p['root_id']=value
             config.pop('_path',None);write_config(args.config,config);print('Корни monik обновлены. Перезапусти только monik.')
-    except (OSError,ValueError,RuntimeError,sqlite3.Error) as exc:
+    except (OSError,ValueError,RuntimeError) as exc:
         parser.exit(1,f'monik: {exc}\n')
+    except Exception as exc:
+        # Keep sqlite lazy: production serve must set SQLITE_TMPDIR before the
+        # native module is imported. Unexpected programming errors still raise.
+        import sqlite3
+        if isinstance(exc,sqlite3.Error): parser.exit(1,f'monik: {exc}\n')
+        raise
 
 if __name__=='__main__': main()
