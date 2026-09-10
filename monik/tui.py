@@ -9,6 +9,7 @@ import curses
 from datetime import datetime
 import json
 import locale
+import math
 import queue
 import re
 import sys
@@ -41,16 +42,18 @@ def clip(text,width):
 
 
 def number(value):
-    return 'нет измерения' if value is None else f'{value:,}'.replace(',',' ')
+    if type(value) not in (int,float) or (type(value) is float and not math.isfinite(value)):
+        return 'нет измерения'
+    return f'{value:,}'.replace(',',' ')
 
 
 def date(value):
     if value is None: return 'время неизвестно'
     try: return datetime.fromtimestamp(value).astimezone().strftime('%d.%m %H:%M:%S %Z')
-    except (ValueError,OverflowError,TypeError): return 'время некорректно'
+    except (ValueError,OverflowError,TypeError,OSError): return 'время некорректно'
 
 
-def render(page,data,width=100):
+def render(page,data,width=100,selected=None):
     """Human labels are Russian; models, IDs, code and messages stay verbatim."""
     lines=[]
     if page=='overview':
@@ -68,15 +71,15 @@ def render(page,data,width=100):
             lines.append('')
         lines.append('Охват частичный. Соединение с monik не подтверждает активность Codex.')
     elif page=='activity':
-        for e in data.get('items',[]):
-            lines.append(f"{date(e['event_at'] if e['event_at'] is not None else e['time'])} | {e['profile']} | {label('events',e['kind'])}")
+        for index,e in enumerate(data.get('items',[])):
+            lines.append(('> ' if index==selected else '  ')+f"{date(e['event_at'] if e['event_at'] is not None else e['time'])} | {e['profile']} | {label('events',e['kind'])}")
             lines.append('  thread: '+e['thread_id'])
             for text in terminal_text(e.get('text','')).splitlines()[:12]:
                 # Long lines remain inspectable through the detail screen and web UI.
                 lines.append('  '+text)
             lines.append('')
         if data.get('next_before'): lines.append('[ Более ранняя страница: [ ]')
-        lines.append('Enter: подробности первого события страницы. Выбрать событие: j/k + Enter.')
+        lines.append('j/k: выбрать событие; Enter: открыть выбранное событие.')
     elif page=='tokens':
         for key,name in [('input_tokens','Ввод'),('cached_input_tokens','Ввод из кэша'),('uncached_input_tokens','Ввод без кэша'),('output_tokens','Вывод'),('reasoning_output_tokens','Reasoning в выводе'),('total_tokens','Всего')]:
             lines.append(f'{name}: {number(data.get(key))}')
@@ -159,6 +162,9 @@ class Fetcher:
 
 
 def run(config,*,once=False,page='overview',profile=None,at=None,ca_file=None):
+    if page not in PAGES: raise ValueError('Неизвестный раздел TUI.')
+    if profile and profile not in {p['name'] for p in config['profiles']}:
+        raise ValueError('Профиль отсутствует в конфигурации monik.')
     params={}
     if profile: params['profile']=profile
     if at:
@@ -176,6 +182,7 @@ def run(config,*,once=False,page='overview',profile=None,at=None,ca_file=None):
     fetcher=Fetcher(client)
     try: curses.wrapper(_screen,fetcher,config,page,params)
     except KeyboardInterrupt: pass
+    except curses.error as exc: raise ValueError('Не удалось открыть TUI: проверь TERM и поддержку терминала.') from exc
     finally: fetcher.close()
 
 
@@ -186,6 +193,8 @@ def _screen(screen,fetcher,config,page,params):
     version=0;dirty=True;paused=False;scroll=0;selected=0;data={};error=None
     pending=False;last=0;last_ok=None;prompt=None;text='';history=[];return_page=page
     profiles=['']+[p['name'] for p in config['profiles']]
+    help_open=False
+    seek_selected=False
 
     def draw(y,text,style=0):
         height,width=screen.getmaxyx()
@@ -194,7 +203,7 @@ def _screen(screen,fetcher,config,page,params):
             except curses.error: pass
 
     while True:
-        if dirty or (not paused and page!='detail' and time.monotonic()-last>=2 and not pending):
+        if not help_open and prompt is None and (dirty or (not paused and not params.get('at') and not params.get('before') and page!='detail' and time.monotonic()-last>=2 and not pending)):
             version+=1;fetcher.request(version,page,params);dirty=False;pending=True;last=time.monotonic()
         try:
             received,result,failure=fetcher.results.get_nowait()
@@ -208,12 +217,28 @@ def _screen(screen,fetcher,config,page,params):
         draw(1,'  '.join(f'{i+1}:{label("pages",p)}'+('*' if page==p else '') for i,p in enumerate(PAGES)))
         draw(2,f"Профиль: {params.get('profile') or 'все'} | Поиск: {params.get('q') or 'нет'} | Обновлено: {last_ok or 'ожидание'}")
         draw(3,error or (f"T: {params['at']}" if params.get('at') else 'Пауза и выход не останавливают сервер или Codex.'))
-        lines=render(page,data,max(1,width-1)) if data else ['Загрузка...' if pending else 'Нет данных.']
-        if page=='activity' and data.get('items'):
+        lines=render(page,data,max(1,width-1),selected=selected) if data else ['Загрузка...' if pending else 'Нет данных.']
+        if help_open:
+            lines=['Управление monik',
+                '1–6 или Tab: раздел. p: переключить профиль.',
+                'Space: заморозить экран. r: один новый снимок.',
+                'Стрелки: прокрутка с паузой. j/k: выбрать событие.',
+                '[ и ]: старые и новые страницы активности.',
+                'Enter: выбранное событие. n: следующая часть данных.',
+                't: исторический момент. l: вернуться к LIVE.',
+                '/: буквальный поиск. Esc: назад / очистить поиск.',
+                'q: выход. Сервер и Codex продолжают работу.',
+                '? или Esc: закрыть справку.']
+        if page=='activity' and data.get('items') and not help_open:
             selected=min(selected,len(data['items'])-1)
-            draw(3,f'Выбрано событие {selected+1}/{len(data["items"])}: {data["items"][selected]["kind"]} | j/k выбрать, Enter открыть')
-        visible=max(0,height-7);scroll=min(scroll,max(0,len(lines)-visible))
-        for row,line in enumerate(lines[scroll:scroll+visible],4): draw(row,line)
+            draw(3,error or f'Выбрано событие {selected+1}/{len(data["items"])}: {data["items"][selected]["kind"]} | j/k выбрать, Enter открыть')
+        visible=max(0,height-7)
+        if seek_selected and page=='activity' and not help_open:
+            index=next((i for i,line in enumerate(lines) if line.startswith('> ')),0)
+            if index<scroll or index>=scroll+visible: scroll=index
+            seek_selected=False
+        scroll=min(scroll,max(0,len(lines)-visible))
+        for row,line in enumerate(lines[(0 if help_open else scroll):(0 if help_open else scroll)+visible],4): draw(row,line,curses.A_REVERSE if page=='activity' and line.startswith('> ') else 0)
         draw(height-3,'q: выход  ?: помощь  Space: пауза  p: профиль  /: поиск  t: T  l: LIVE  r: обновить')
         draw(height-2,'↑↓/PgUp/PgDn: прокрутка  [ ]: страницы  Enter: детали  Esc: назад  ?: справка')
         draw(height-1,(prompt+': '+text) if prompt else ('Запрос...' if pending else f'Строки {scroll+1}–{min(len(lines),scroll+visible)} из {len(lines)}'))
@@ -234,14 +259,16 @@ def _screen(screen,fetcher,config,page,params):
             continue
         if key in ('q','й'): return
         if key=='?':
-            data={};page='detail';lines=[]
-            screen.erase()
-            for row,line in enumerate(['Управление monik','1–6 или Tab: раздел. p: переключить профиль.','Space: заморозить только экран. r: обновить снимок.','Стрелки: прокрутка с паузой. j/k: выбрать событие.','[ и ]: старые и новые страницы активности.','Enter: выбранное событие. n: следующая часть данных.','t: исторический момент. l: убрать T и вернуться к LIVE.','/: буквальный поиск. Esc: закрыть детали / очистить поиск.','q: выйти из клиента. Сервер и Codex продолжают работу.','Нажми любую клавишу.']): draw(row,line)
-            screen.refresh();screen.timeout(-1);screen.get_wch();screen.timeout(100)
-            page=return_page if return_page in PAGES else 'overview';data={};dirty=True;continue
+            help_open=not help_open
+            if help_open: version+=1;pending=False
+            continue
+        if help_open:
+            if key=='\x1b': help_open=False
+            continue
         if key==' ': paused=not paused;version+=1;pending=False;dirty=not paused;continue
         if key in ('r','к'): dirty=True;continue
         if key in ('/','t'):
+            version+=1;pending=False
             prompt='Поиск' if key=='/' else 'Момент T (ISO с часовым поясом)';text=params.get('q' if key=='/' else 'at','');continue
         if key in ('l','д'):
             params.pop('at',None);params.pop('before',None);history=[];paused=False;scroll=0;dirty=True;continue
@@ -252,9 +279,9 @@ def _screen(screen,fetcher,config,page,params):
             page=PAGES[(PAGES.index(page)+1)%len(PAGES)] if key=='\t' and page in PAGES else PAGES[int(key)-1] if key!='\t' else 'overview'
             return_page=page;params.pop('_event',None);params.pop('offset',None);params.pop('before',None);history=[];scroll=0;selected=0;data={};dirty=True;continue
         if key in (curses.KEY_UP,curses.KEY_DOWN,curses.KEY_PPAGE,curses.KEY_NPAGE):
-            scroll=max(0,scroll+({curses.KEY_UP:-1,curses.KEY_DOWN:1,curses.KEY_PPAGE:-max(1,visible),curses.KEY_NPAGE:max(1,visible)}[key]));paused=True;continue
+            scroll=max(0,scroll+({curses.KEY_UP:-1,curses.KEY_DOWN:1,curses.KEY_PPAGE:-max(1,visible),curses.KEY_NPAGE:max(1,visible)}[key]));paused=True;version+=1;pending=False;continue
         if page=='activity' and key in ('j','k'):
-            selected=max(0,min(len(data.get('items',[]))-1,selected+(1 if key=='j' else -1)));paused=True;continue
+            selected=max(0,min(len(data.get('items',[]))-1,selected+(1 if key=='j' else -1)));paused=True;version+=1;pending=False;seek_selected=True;continue
         if page=='activity' and key=='[' and data.get('next_before'):
             history.append(params.get('before'));params['before']=data['next_before'];scroll=0;selected=0;paused=True;data={};dirty=True;continue
         if page=='activity' and key==']' and history:
