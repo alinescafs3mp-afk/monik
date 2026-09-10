@@ -120,7 +120,7 @@ class Queries(UsageQueries):
             elif key not in previous or previous[key] is None: status='baseline';counts['baselines']+=1;previous[key]=value
             else:
                 delta=value-previous[key];previous[key]=value
-                if delta<0: status='negative_change';counts['negative_changes']+=1;previous[key]=None
+                if delta<0: status='negative_change';counts['negative_changes']+=1
                 elif delta==0: status='repeat';counts['repeats']+=1
                 else: status='positive_delta';counts['known_positive_delta']+=delta
             items.append({**self.public_event(row),**d,'delta':delta,'status':status})
@@ -150,7 +150,10 @@ class Queries(UsageQueries):
 
     def overview(self,params,profiles):
         cards=[]
+        selected=params.get('profile')
         for p in profiles:
+            if selected and p['name']!=selected:
+                continue
             name=p['name'];root=p.get('root_id')
             with self.connect() as db:
                 # A current designation is not silently backdated into a historical view.
