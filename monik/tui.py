@@ -269,7 +269,7 @@ def _screen(screen,fetcher,config,page,params):
             if key=='\x1b': prompt=None;continue
             if key in ('\n','\r'):
                 if prompt=='Поиск':
-                    params['q']=text;params['search_mode']='substring';page='activity';params.pop('before',None);history=[]
+                    params['q']=text;params['search_mode']='substring';page='activity';params.pop('_event',None);params.pop('offset',None);params.pop('before',None);history=[]
                 elif prompt=='Момент T (ISO с часовым поясом)':
                     if timestamp(text) is None: error='Некорректный момент T. Пример: 2026-09-10T12:00:00+03:00';prompt=None;continue
                     params['at']=text
@@ -291,6 +291,8 @@ def _screen(screen,fetcher,config,page,params):
             version+=1;pending=False
             prompt='Поиск' if key=='/' else 'Момент T (ISO с часовым поясом)';text=params.get('q' if key=='/' else 'at','');continue
         if key in ('l','д'):
+            if page=='detail':
+                page=return_page;params.pop('_event',None);params.pop('offset',None);data={}
             params.pop('at',None);params.pop('before',None);history=[];paused=False;scroll=0;dirty=True;continue
         if key in ('p','з'):
             current=params.get('profile','');params['profile']=profiles[(profiles.index(current)+1)%len(profiles)] if current in profiles else ''
