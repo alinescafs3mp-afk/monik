@@ -17,7 +17,7 @@ from monik.app import create_app
 from monik.cli import make_demo,write_config
 from monik.collector import Collector,source_file
 from monik.config import load,forbidden
-from monik.model import normalize,usage,rate_windows,redact,safe,timestamp,dumps,digest
+from monik.model import normalize,usage,rate_windows,redact,safe,timestamp,dumps,digest,MAX_STORED_TEXT_BYTES
 from monik.storage import Store
 from monik.sandbox import abi
 
@@ -98,6 +98,38 @@ class Local(unittest.TestCase):
         by={x['profile']:x for x in result['latest']};self.assertEqual(by['astra']['remaining_percent'],99);self.assertEqual(by['sol']['remaining_percent'],76)
         self.assertTrue(any('non_monotonic_snapshot' in x['labels'] for x in result['history']));self.assertTrue(any('reset_time_changed' in x['labels'] for x in result['history']))
         self.assertEqual(result['cause'],'unknown');self.assertNotIn('spent_percent',result)
+    def test_latest_limits_are_one_atomic_source_snapshot(self):
+        old={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
+            'limit_id':'codex','primary':{'used_percent':8,'window_minutes':10080,'resets_at':900}}}}
+        current={'timestamp':200,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
+            'limit_id':'codex_bengalfox',
+            'primary':{'used_percent':38,'window_minutes':300,'resets_at':500},
+            'secondary':{'used_percent':32,'window_minutes':10080,'resets_at':1200}}}}
+        self.put(old,delivery='old');self.put(current,delivery='current')
+        live=self.store.limits({})
+        self.assertEqual({(x['limit_id'],x['role']) for x in live['latest']},
+                         {('codex_bengalfox','primary'),('codex_bengalfox','secondary')})
+        self.assertEqual(len(live['history']),3)
+        self.assertTrue(all(x['active_snapshot'] for x in live['latest']))
+        historical=self.store.limits({'at':150})
+        self.assertEqual([(x['limit_id'],x['remaining_percent']) for x in historical['latest']],
+                         [('codex',92)])
+    def test_limit_snapshot_respects_knowledge_cutoff_for_provenance(self):
+        complete={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
+            'limit_id':'codex','primary':{'used_percent':8,'window_minutes':300},
+            'secondary':{'used_percent':12,'window_minutes':10080}}}}
+        secondary_only={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
+            'limit_id':'codex','secondary':{'used_percent':12,'window_minutes':10080}}}}
+        events=normalize(complete,'astra','A','stable-identity')
+        with self.store.connect(write=True) as db:
+            for event in events:
+                self.store.put(db,event,{'source':'old','delivery':'old-snapshot','ingested_at':100})
+            for event in normalize(secondary_only,'astra','A','stable-identity'):
+                self.store.put(db,event,{'source':'late','delivery':'late-snapshot','ingested_at':300})
+        historical=self.store.limits({'view':'knowledge','at':200})
+        self.assertEqual({x['role'] for x in historical['latest']},{'primary','secondary'})
+        live=self.store.limits({})
+        self.assertEqual([x['role'] for x in live['latest']],['secondary'])
     def test_legacy_rate_alias_not_double_counted(self):
         value=json.loads((FX/'app_server_rate_limits_response.json').read_text());out=rate_windows(value.get('result',value))
         self.assertEqual(len({(x['limit_id'],x['role']) for x in out}),len(out))
@@ -167,6 +199,39 @@ class Local(unittest.TestCase):
         path=self.source/'a.jsonl';large={'type':'response_item','payload':{'type':'function_call_output','call_id':'BIG','output':'x'*(10*1024*1024)}}
         path.write_bytes(encoded(large));c=self.collector([path]);c.tick();items=self.store.events({'kind':'tool_output'})['items'];self.assertEqual(len(items),1)
         detail=self.store.detail(items[0]['uid'],{});self.assertLess(len(dumps(detail)),200000);self.assertIn('TRUNCATED',dumps(detail))
+    def test_command_execution_status_does_not_duplicate_bulk_output(self):
+        marker='DUPLICATED_BULK_OUTPUT'
+        row={'type':'event_msg','payload':{'type':'item_completed','item':{
+            'type':'CommandExecution','id':'cmd-1','status':'completed','exit_code':0,
+            'command':'printf safe','cwd':'/tmp','stdout':marker*10000,
+            'stderr':marker*10000,'aggregated_output':marker*10000,
+            'formatted_output':marker*10000}}}
+        event=normalize(row,'astra','A','command')[0]
+        self.assertEqual(event['kind'],'unknown:CommandExecution')
+        self.assertEqual(event['data']['status'],'completed')
+        self.assertNotIn('stdout',event['data']);self.assertNotIn('aggregated_output',event['data'])
+        self.assertNotIn(marker,dumps(event));self.assertLess(len(dumps(event)),4096)
+    def test_storage_compaction_preserves_evidence_and_usage(self):
+        marker='OLD_VERBOSE_COMMAND_OUTPUT'
+        legacy={'type':'CommandExecution','id':'legacy','status':'completed','exit_code':0,
+                'command':'true','stdout':marker*10000,'stderr':'','aggregated_output':marker*10000}
+        with self.store.connect(write=True) as db:
+            for index in range(70):
+                self.store.put(db,{'profile':'astra','thread_id':'A','kind':'unknown:CommandExecution',
+                    'at':100+index,'native':'legacy-'+str(index),'data':legacy,'text':marker*10000},
+                    {'source':'old','delivery':'old-'+str(index),'ingested_at':101+index})
+        self.put({'type':'token_usage_record','timestamp':110,'payload':{'thread_id':'A',
+            'response_id':'usage-kept','usage':{'input_tokens':9,'cached_input_tokens':4,
+            'output_tokens':1,'reasoning_output_tokens':1,'total_tokens':10}}},delivery='usage',at=110)
+        before=(self.store.sequence(),self.store.coverage()['additional_deliveries'],self.store.usage({})['total_tokens'])
+        result=self.store.compact()
+        after=(self.store.sequence(),self.store.coverage()['additional_deliveries'],self.store.usage({})['total_tokens'])
+        self.assertEqual(after,before);self.assertGreaterEqual(result['updated_events'],70)
+        event=self.store.events({'kind':'unknown:CommandExecution','limit':1})['items'][0]
+        detail=self.store.detail(event['uid'],{})
+        self.assertNotIn(marker,dumps(detail));self.assertLessEqual(len(detail['text'].encode()),MAX_STORED_TEXT_BYTES)
+        self.assertEqual(self.store.events({'q':marker,'search_mode':'substring'})['items'],[])
+        with self.store.connect() as db:self.assertEqual(db.execute('PRAGMA quick_check').fetchone()[0],'ok')
     def test_redaction_and_hidden_reasoning(self):
         clean=safe({'password':'TEST_PRIVATE_VALUE','encrypted_content':'OPAQUE_SHOULD_NOT_SURVIVE','body':'Authorization: Bearer abcdefghijklmnop sk-testexample0123456789'})
         self.assertNotIn('TEST_PRIVATE_VALUE',dumps(clean));self.assertNotIn('OPAQUE_SHOULD_NOT_SURVIVE',dumps(clean));self.assertNotIn('abcdefghijklmnop',dumps(clean))

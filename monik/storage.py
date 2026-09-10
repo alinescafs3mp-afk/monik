@@ -9,7 +9,7 @@ import time
 import threading
 from pathlib import Path
 from contextlib import contextmanager
-from .model import FIELDS,digest,dumps
+from .model import FIELDS,MAX_STORED_TEXT_BYTES,SAFE_VALUE_BYTES,bounded_text,compact_persisted,digest,dumps,text_content
 from .queries import Queries
 
 SCHEMA='''
@@ -163,6 +163,35 @@ class Store(Queries):
                 src.backup(dst,pages=256,sleep=0.05)
                 if dst.execute('PRAGMA quick_check').fetchone()[0]!='ok': raise RuntimeError('Backup check failed')
             finally: dst.close()
+
+    def compact(self):
+        """Shrink already-redacted own payloads without deleting evidence rows."""
+        before=self.path.stat().st_size;updated=0
+        with self.connect(write=True) as db:
+            # Keyset batches keep maintenance memory bounded even when a legacy
+            # database contains gigabytes of duplicated command output.
+            last=0
+            while True:
+                rows=db.execute('''SELECT id,kind,data,text,search_text,hash FROM events
+                    WHERE id>? AND (kind='unknown:CommandExecution'
+                       OR length(CAST(data AS BLOB))>?
+                       OR length(CAST(text AS BLOB))>?)
+                    ORDER BY id LIMIT 64''',(last,SAFE_VALUE_BYTES,MAX_STORED_TEXT_BYTES)).fetchall()
+                if not rows:break
+                last=rows[-1]['id']
+                for row in rows:
+                    clean=compact_persisted(row['kind'],json.loads(row['data']))
+                    data=dumps(clean)
+                    text=bounded_text(text_content(clean) if row['kind']=='unknown:CommandExecution' else row['text'])
+                    search=text.casefold();hashed=digest(data)
+                    if (data,text,search,hashed)!=(row['data'],row['text'],row['search_text'],row['hash']):
+                        db.execute('UPDATE events SET data=?,text=?,search_text=?,hash=? WHERE id=?',
+                                   (data,text,search,hashed,row['id']));updated+=1
+            if updated: db.execute("INSERT INTO fts(fts) VALUES('rebuild')")
+        with self.connect(write=True) as db:
+            db.execute('VACUUM')
+        return {'updated_events':updated,'before_bytes':before,'after_bytes':self.path.stat().st_size,
+                'events_deleted':0,'provenance_deleted':0}
 
     def overview(self,params,profiles):
         with self.connect():

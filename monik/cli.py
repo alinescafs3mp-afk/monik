@@ -61,7 +61,7 @@ def serve(path):
 def main():
     parser=argparse.ArgumentParser(prog='monik',description='Локальный read-only Codex Observatory')
     sub=parser.add_subparsers(dest='command',required=True)
-    for name in ('init','serve','doctor','token','backup','roots'):
+    for name in ('init','serve','doctor','token','backup','compact','roots'):
         cmd=sub.add_parser(name);cmd.add_argument('--config',default=DEFAULT)
         if name=='backup': cmd.add_argument('target')
         if name=='roots': cmd.add_argument('--astra');cmd.add_argument('--sol')
@@ -105,6 +105,20 @@ def main():
         elif args.command=='backup':
             from .storage import Store
             Store(Path(config['data_dir'])/'observatory.sqlite').backup(expand(args.target));print('Проверенная резервная копия:',args.target)
+        elif args.command=='compact':
+            import fcntl,stat
+            data=private_directory(config['data_dir']);temp=private_directory(data/'tmp',create=True)
+            os.environ['TMPDIR']=os.environ['SQLITE_TMPDIR']=str(temp)
+            lock_path=data/'collector.lock';fd=os.open(lock_path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+            try:
+                info=os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.geteuid() or info.st_mode & 0o077:
+                    raise ValueError('Collector lock must be an owner-only regular file (0600)')
+                try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except BlockingIOError:raise RuntimeError('Останови только службу monik перед уплотнением хранилища.') from None
+                from .storage import Store
+                print(json.dumps(Store(data/'observatory.sqlite').compact(),ensure_ascii=False,indent=2))
+            finally:os.close(fd)
         elif args.command=='roots':
             for p in config['profiles']:
                 value=getattr(args,p['name'],None)

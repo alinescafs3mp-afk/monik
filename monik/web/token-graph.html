@@ -29,6 +29,18 @@
     <div class="button-row"><button id="graph-pause" aria-pressed="false">Пауза экрана</button><button id="graph-refresh">Обновить</button></div>
   </section>
   <p id="graph-paused" class="notice" role="status" hidden>Экран приостановлен. Сервер продолжает собирать данные; Codex работает независимо.</p>
+  <section id="graph-anomaly" class="panel graph-anomaly anomaly-unknown" aria-label="Индекс аномалии расхода" aria-live="polite">
+    <div class="graph-anomaly-copy">
+      <div class="eyebrow">ОБЩАЯ ДИНАМИКА · ПОСЛЕДНИЕ 15 МИНУТ</div>
+      <div class="graph-anomaly-score"><strong id="graph-anomaly-value">—</strong><span>/ 100</span></div>
+      <div id="graph-anomaly-state" class="graph-anomaly-state">Недостаточно данных</div>
+    </div>
+    <div class="graph-anomaly-detail">
+      <div class="graph-anomaly-track" role="meter" aria-label="Индекс аномалии от 0 до 100" aria-valuemin="0" aria-valuemax="100"><span id="graph-anomaly-fill"></span></div>
+      <p id="graph-anomaly-summary" class="small">Сравниваем подтверждённый темп с локальной шестичасовой базой.</p>
+      <div id="graph-anomaly-profiles" class="graph-anomaly-profiles"></div>
+    </div>
+  </section>
   <section id="graph-cards" class="cards graph-cards" aria-label="Измерения профилей"><div class="card muted">Загружается измеренный расход…</div></section>
   <section class="panel graph-plot-panel" aria-label="График расхода">
     <div class="section-heading"><div><h2>Темп расхода</h2><p id="graph-step" class="small muted">Токенов в минуту · шаг зависит от периода</p></div><div id="graph-legend" class="button-row" role="group" aria-label="Видимые профили"></div></div>
@@ -37,7 +49,7 @@
     <label class="graph-slider-label">Интервал для подробностей<input id="graph-slider" type="range" min="0" max="1" value="1" aria-label="Выбрать интервал графика"></label>
     <div class="graph-footline"><span id="graph-updated">Снимок ещё не получен</span><span>Часовой пояс браузера: <span id="graph-timezone"></span></span></div>
   </section>
-  <p class="small muted graph-explanation">Точки относятся ко времени сохранённых ответов, а не к каждому шагу генерации. Кэш входит во ввод, reasoning входит в вывод. Разрывы линии означают отсутствие пригодных записей, не доказанный простой. Крайние корзины могут быть неполными; темп нормирован на полный шаг, без экстраполяции. Сумма за период включает только подтверждённые измерения.</p>
+  <p class="small muted graph-explanation">Точки относятся ко времени сохранённых ответов, а не к каждому шагу генерации. Кэш входит во ввод, reasoning входит в вывод. Разрывы линии означают отсутствие пригодных записей, не доказанный простой. Крайние корзины могут быть неполными; темп нормирован на полный шаг, без экстраполяции. Сумма за период включает только подтверждённые измерения. Индекс аномалии сравнивает последние 15 минут с локальной базой предыдущих 6 часов и берёт самый сильный сигнал среди общего темпа и профилей. Это сигнал динамики, не процент лимита и не биллинг.</p>
   <p id="graph-quality" class="notice" hidden></p>
   <details class="panel graph-table"><summary>Точные значения и качество данных</summary><p class="small muted">Показатель совпадает с выбранным над графиком. Пустое измерение не заменяется нулём. Профиль включает отнесённые к нему корневые и дочерние сессии.</p><div class="table-wrap"><table><thead><tr><th scope="col">Интервал</th><th scope="col">Профиль</th><th scope="col">Токены</th><th scope="col">Токенов / мин</th><th scope="col">Ответы</th><th scope="col">Состояние</th></tr></thead><tbody id="graph-table-body"></tbody></table></div></details>
   <footer class="footer"><span>monik · собственная история, не биллинг провайдера</span><span>Частичное покрытие · закрытые рассуждения не собираются</span></footer>

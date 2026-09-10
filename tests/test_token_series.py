@@ -139,7 +139,7 @@ class Series(unittest.TestCase):
             observed=[];db.set_trace_callback(observed.append)
             data=usage_series(self.store, PROFILES, now=NOW)
         self.assertEqual(self.store.sequence(),before);self.assertEqual(PROFILES,definitions)
-        self.assertEqual(len(observed),3)
+        self.assertEqual(len(observed),4)
         self.assertFalse(any(s.lstrip().upper().startswith(('INSERT','UPDATE','DELETE')) for s in observed))
         self.assertNotIn('raw_sha256',json.dumps(data));self.assertNotIn('payload',json.dumps(data))
 
@@ -149,6 +149,62 @@ class Series(unittest.TestCase):
         data=self.series()
         self.assertTrue(all(s['responses']==0 for s in data['series']))
         self.assertEqual(data['cursor'],self.store.sequence())
+
+    def anomaly_baseline(self, *, recent_multiplier=1, recent_responses=1):
+        start=NOW-(6*3600+15*60)
+        for slot in range(24):
+            self.put(response=f'base-{slot}',at=start+slot*900+30,
+                     ingested=start+slot*900+31,amount=90)
+        for index in range(recent_responses):
+            self.put(response=f'recent-{index}',at=NOW-800+index,
+                     ingested=NOW-799+index,amount=90*recent_multiplier//recent_responses,
+                     output_tokens=10*recent_multiplier//recent_responses,
+                     total_tokens=100*recent_multiplier//recent_responses)
+        return self.series()['anomaly']
+
+    def test_anomaly_index_is_fixed_window_relative_and_bounded(self):
+        normal=self.anomaly_baseline()
+        self.assertEqual(normal['score'],25)
+        self.assertEqual(normal['level'],'green')
+        self.assertEqual(normal['recent_minutes'],15)
+        self.assertEqual(normal['baseline_hours'],6)
+        self.assertEqual(normal['ratio'],1)
+        self.assertEqual(normal['score_source'],'combined')
+        self.assertEqual(normal['score_confidence'],normal['confidence'])
+        self.assertNotIn('limit_percent',normal)
+
+    def test_confident_fourfold_rate_is_red(self):
+        anomaly=self.anomaly_baseline(recent_multiplier=4,recent_responses=4)
+        self.assertEqual(anomaly['score'],100)
+        self.assertEqual(anomaly['level'],'red')
+        self.assertEqual(anomaly['confidence'],'high')
+
+    def test_strongest_profile_controls_the_overall_alert(self):
+        self.anomaly_baseline(recent_multiplier=4,recent_responses=4)
+        start=NOW-(6*3600+15*60)
+        for slot in range(24):
+            self.put(response=f'sol-base-{slot}',profile='sol',at=start+slot*900+30,
+                     ingested=start+slot*900+31,amount=90)
+        self.put(response='sol-recent',profile='sol',at=NOW-100,ingested=NOW-99,amount=90)
+        anomaly=self.series()['anomaly']
+        self.assertEqual(anomaly['score'],100)
+        self.assertEqual(anomaly['score_source'],'astra')
+        self.assertEqual(anomaly['score_source_label'],'Astra')
+        self.assertEqual(anomaly['score_confidence'],'high')
+        self.assertLess(anomaly['ratio'],4)
+
+    def test_absent_measurements_are_unknown_but_measured_zero_is_zero(self):
+        self.assertIsNone(self.series()['anomaly']['score'])
+        start=NOW-(6*3600+15*60)
+        for slot in range(8):
+            self.put(response=f'base-{slot}',at=start+slot*900+30,
+                     ingested=start+slot*900+31,amount=90)
+        self.put(response='zero',at=NOW-100,ingested=NOW-99,amount=0,
+                 output_tokens=0,reasoning_output_tokens=0,total_tokens=0)
+        anomaly=self.series()['anomaly']
+        self.assertEqual(anomaly['score'],0)
+        self.assertEqual(anomaly['level'],'green')
+        self.assertEqual(anomaly['recent_tokens'],0)
 
 
 class API(unittest.TestCase):
@@ -185,6 +241,9 @@ class API(unittest.TestCase):
         for p in ('/token-graph','/token-graph.js','/token-graph.css'):
             r=self.client.get(p);self.assertEqual(r.status_code,200)
             self.assertIn("default-src 'none'",r.headers['content-security-policy'])
+        page=self.client.get('/token-graph').text
+        script=self.client.get('/token-graph.js').text
+        self.assertIn('graph-anomaly',page);self.assertIn('paintAnomaly',script)
         self.login();self.assertEqual(self.client.post('/api/v1/usage-series',json={}).status_code,405)
 
     def test_fixed_time_is_valid_and_future_is_rejected(self):

@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 FIELDS = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens')
+SAFE_VALUE_BYTES = 65536
+SAFE_STRING_BYTES = 32768
+MAX_STORED_TEXT_BYTES = 16384
 SENSITIVE = {'encrypted_content','authorization','cookie','set-cookie','password','passwd','access_token','refresh_token','id_token','api_key','secret','private_key','environment','env','headers'}
 PATTERNS = [
     (r'-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)','[PRIVATE KEY REMOVED]'),
@@ -44,14 +47,14 @@ def redact(text: str) -> str:
     for pattern,replacement in PATTERNS: text=re.sub(pattern,replacement,text)
     return text
 
-def safe(value: Any, budget: int=131072) -> Any:
+def safe(value: Any, budget: int=SAFE_VALUE_BYTES) -> Any:
     """Best-effort redaction, byte/node/depth limits; no unredacted raw copy."""
     left=[budget,2048]
     def visit(v,depth=0):
         left[1]-=1
         if depth>14 or min(left)<=0: return '[TRUNCATED]'
         if isinstance(v,str):
-            raw=redact(v).encode();size=min(left[0],65536);left[0]-=min(size,len(raw))
+            raw=redact(v).encode();size=min(left[0],SAFE_STRING_BYTES);left[0]-=min(size,len(raw))
             return raw[:size].decode('utf-8','ignore')+(f' [TRUNCATED; original_bytes={len(v.encode())}]' if len(raw)>size else '')
         if isinstance(v,dict):
             out={}
@@ -69,6 +72,22 @@ def safe(value: Any, budget: int=131072) -> Any:
         if isinstance(v,float): return v if math.isfinite(v) else None
         return '[UNSUPPORTED]'
     return visit(value)
+
+
+def bounded_text(value: Any, limit: int=MAX_STORED_TEXT_BYTES) -> str:
+    raw=str(value).encode()
+    if len(raw)<=limit: return raw.decode()
+    suffix=b' [TRUNCATED]'
+    return raw[:limit-len(suffix)].decode('utf-8','ignore')+suffix.decode()
+
+
+def compact_persisted(kind: str, value: Any) -> Any:
+    """Apply the current durable payload bound and remove redundant UI output."""
+    if kind=='unknown:CommandExecution' and isinstance(value,dict):
+        fields=('type','id','status','exit_code','duration','process_id','source','cwd','command','parsed_cmd')
+        value={key:value.get(key) for key in fields if key in value}
+        value['bulk_output_omitted']=True
+    return safe(value)
 
 def usage(value: Any) -> dict:
     raw=value if isinstance(value,dict) else {}
@@ -134,7 +153,7 @@ def normalize(row: dict,profile: str,thread: str,delivery: str,model: str|None=N
     base={'profile':profile,'thread_id':str(tid or 'unknown'),'at':at,'timestamp_kind':'source_record' if at is not None else 'observer_clock','model':model,'turn_id':p.get('turn_id',meta.get('turn_id')),'call_id':p.get('call_id'),'response_id':p.get('response_id')}
     out=[]
     def add(kind,data,native=None,text=None):
-        clean=safe(data)
+        clean=compact_persisted(kind,data)
         # Derive both indexed text and display text from the same redacted projection.
         # Otherwise structured secrets removed from data could survive in the FTS text.
         shown = clean.get('content', []) if kind.startswith('message:') else clean
@@ -144,7 +163,7 @@ def normalize(row: dict,profile: str,thread: str,delivery: str,model: str|None=N
         fields = {k:(v if not isinstance(v, str) or len(v)<=512 else 'sha256:'+digest(v)) for k,v in base.items()}
         for field in ('turn_id','call_id','response_id','model'):
             if fields.get(field) is not None and not isinstance(fields[field], str): fields[field]=None
-        out.append({**fields,'kind':kind,'data':clean,'native':identity,'text':text_content(shown)[:65536]})
+        out.append({**fields,'kind':kind,'data':clean,'native':identity,'text':bounded_text(text_content(shown))})
     if outer=='token_usage_record' or ('usage' in row and 'response_id' in row):
         response_id=p.get('response_id')
         identified=isinstance(response_id,str) and bool(response_id)

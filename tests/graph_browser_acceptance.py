@@ -99,6 +99,9 @@ def main():
                 page.add_script_tag(content=BRIDGE);page.add_script_tag(content=(ROOT/'monik/web/token-graph.js').read_text())
                 page.locator('#graph-cards h2').first.wait_for();page.wait_for_timeout(200)
                 check('two_profile_cards',page.locator('#graph-cards h2').count()==2)
+                check('anomaly_index_visible',page.locator('#graph-anomaly-value').inner_text()!='—')
+                check('anomaly_profile_breakdown',page.locator('#graph-anomaly-profiles .anomaly-profile').count()==2)
+                check('anomaly_meter_bounded',0<=int(page.locator('#graph-anomaly-value').inner_text())<=100)
                 check('actual_svg_points',page.locator('#graph-svg .graph-dot').count()>20)
                 check('demo_badge',page.locator('#graph-demo').is_visible())
                 for hours in (24,12,6,3,2,1):
@@ -128,7 +131,7 @@ def main():
                 check('commit_notification_updates_dom',page.locator('#graph-cards').inner_text()!=old)
                 page.locator('.graph-table summary').click();check('numeric_table',page.locator('#graph-table-body tr').count()>50)
                 client.cookies.clear();page.click('#graph-refresh');page.locator('#graph-login').wait_for(state='visible')
-                check('expired_session_clears_sensitive_dom',page.locator('#graph-cards').inner_text()=='' and page.locator('#graph-table-body').inner_text()=='' and page.locator('#graph-legend').inner_text()=='')
+                check('expired_session_clears_sensitive_dom',page.locator('#graph-cards').inner_text()=='' and page.locator('#graph-table-body').inner_text()=='' and page.locator('#graph-legend').inner_text()=='' and not page.locator('#graph-anomaly').is_visible())
                 page.select_option('#graph-metric','output_tokens');page.set_viewport_size({'width':390,'height':844});page.wait_for_timeout(150)
                 check('resize_and_metric_cannot_restore_logged_out_data',page.locator('#graph-cards').inner_text()=='' and page.locator('#graph-svg .graph-dot').count()==0)
                 check('no_js_errors',not errors,errors)

@@ -30,6 +30,25 @@
     $('graph-pause').textContent = state.paused ? 'Продолжить' : 'Пауза экрана';
     $('graph-paused').hidden = !state.paused;
   }
+  function paintAnomaly() {
+    const a = state.data?.anomaly, box = $('graph-anomaly');
+    box.hidden = false;
+    const level = a?.level || 'unknown', score = typeof a?.score === 'number' ? a.score : null;
+    box.className = `panel graph-anomaly anomaly-${level}`;
+    $('graph-anomaly-value').textContent = score === null ? '—' : String(score);
+    $('graph-anomaly-state').textContent = ({green: 'Норма', yellow: 'Повышенный расход', red: 'Уверенная аномалия', unknown: 'Недостаточно данных'})[level];
+    const track = box.querySelector('.graph-anomaly-track'), fill = $('graph-anomaly-fill');
+    fill.style.width = `${score ?? 0}%`;
+    if (score === null) track.removeAttribute('aria-valuenow'); else track.setAttribute('aria-valuenow', String(score));
+    const confidence = ({high: 'высокая', medium: 'средняя', low: 'низкая', unknown: 'не определена'})[a?.score_confidence || 'unknown'];
+    const source = a?.score_source === 'combined' ? 'общий темп' : a?.score_source_label || 'профиль';
+    $('graph-anomaly-summary').textContent = score === null
+      ? `Оценка пока невозможна: измеренных базовых интервалов ${a?.measured_baseline_buckets ?? 0}. Отсутствие данных не считается нулём.`
+      : `Сейчас ${n(a.recent_rate_per_minute)} ток/мин · локальная база ${n(a.baseline_rate_per_minute)} ток/мин · отношение ${n(a.ratio)}× · индекс задаёт ${source} · уверенность ${confidence}.`;
+    const profiles = document.createDocumentFragment();
+    for (const p of a?.profiles || []) profiles.append(node('span', `anomaly-profile anomaly-${p.level}`, `${p.label}: ${p.score ?? '—'}`));
+    $('graph-anomaly-profiles').replaceChildren(profiles);
+  }
   function paintCards() {
     const out = document.createDocumentFragment();
     for (const s of state.data.series) {
@@ -129,7 +148,7 @@
     $('graph-table-body').replaceChildren(out);
   }
   function paint() {
-    paintCards(); paintLegend(); paintPlot(); paintTable();
+    paintAnomaly(); paintCards(); paintLegend(); paintPlot(); paintTable();
     const d = state.data;
     $('graph-step').textContent = `${metrics[state.metric]} · токенов в минуту · шаг ${d.bucket_seconds / 60} мин`;
     $('graph-updated').textContent = `Снимок: ${date(d.window_end)}`;
@@ -162,7 +181,7 @@
       const r = await fetch('/api/v1/usage-series?hours=' + state.hours, {credentials: 'same-origin', signal: controller.signal});
       if (r.status === 401) {
         state.authenticated = false; state.stream?.close(); state.stream = null; state.data = null; state.index = null; state.dirty = false;
-        $('graph-login').hidden = false; $('graph-legend').replaceChildren(); $('graph-quality').hidden = true; $('graph-quality').textContent = ''; $('graph-demo').hidden = true; $('graph-updated').textContent = 'Нужен вход владельца'; $('graph-empty').hidden = true; $('graph-cards').replaceChildren(); $('graph-svg').replaceChildren(); $('graph-table-body').replaceChildren(); $('graph-inspector').replaceChildren();
+        $('graph-login').hidden = false; $('graph-anomaly').hidden = true; $('graph-legend').replaceChildren(); $('graph-quality').hidden = true; $('graph-quality').textContent = ''; $('graph-demo').hidden = true; $('graph-updated').textContent = 'Нужен вход владельца'; $('graph-empty').hidden = true; $('graph-cards').replaceChildren(); $('graph-svg').replaceChildren(); $('graph-table-body').replaceChildren(); $('graph-inspector').replaceChildren();
         badge('Нужен вход', true); return;
       }
       if (!r.ok) {let message; try {message = (await r.json()).detail;} catch {} throw Error(message || `Сервер monik: HTTP ${r.status}`);}

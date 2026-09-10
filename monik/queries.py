@@ -92,7 +92,31 @@ class Queries(UsageQueries):
         where,values=self.filters(p)
         with self.connect() as db:
             rows=db.execute(f'SELECT e.* FROM events e WHERE {where} ORDER BY time DESC,id DESC LIMIT 2000',values).fetchall()
-            all_latest=db.execute(f'''SELECT * FROM (SELECT e.*,row_number() OVER(PARTITION BY profile,json_extract(data,'$.limit_id'),json_extract(data,'$.role') ORDER BY time DESC,id DESC) AS rn FROM events e WHERE {where}) WHERE rn=1 LIMIT 100''',values).fetchall()
+            # A token_count record is an atomic account snapshot. Limit identifiers
+            # are provider metadata and can change between client versions. Keeping
+            # the last row forever for every old identifier made obsolete values look
+            # current beside the real /status value. Anchor each profile on its newest
+            # source record, then return every window emitted by that same record.
+            anchors=db.execute(f'''SELECT * FROM (SELECT e.*,
+                row_number() OVER(PARTITION BY profile ORDER BY time DESC,id DESC) AS rn
+                FROM events e WHERE {where}) WHERE rn=1 LIMIT 16''',values).fetchall()
+            active=[]
+            knowledge_cutoff=(min((params[k] for k in ('at','until')
+                if params.get(k) is not None),default=None)
+                if params.get('view')=='knowledge' else None)
+            for anchor in anchors:
+                provenance_cut=' AND ingested_at<=?' if knowledge_cutoff is not None else ''
+                delivery_args=(anchor['id'],knowledge_cutoff) if knowledge_cutoff is not None else (anchor['id'],)
+                delivery=db.execute('SELECT delivery FROM provenance WHERE event_id=?'+provenance_cut+
+                    ' ORDER BY ingested_at DESC LIMIT 1',delivery_args).fetchone()
+                if delivery:
+                    joined_cut=' AND pv.ingested_at<=?' if knowledge_cutoff is not None else ''
+                    joined_args=(*values,anchor['profile'],delivery[0],knowledge_cutoff) if knowledge_cutoff is not None else (*values,anchor['profile'],delivery[0])
+                    active.extend(db.execute(f'''SELECT DISTINCT e.* FROM events e
+                        JOIN provenance pv ON pv.event_id=e.id WHERE {where}
+                        AND e.profile=? AND pv.delivery=?{joined_cut} ORDER BY e.id''',
+                        joined_args).fetchall())
+        active_uids={row['uid'] for row in active}
         latest,history,previous={},{},{}
         now=min((params[k] for k in ('at','until') if params.get(k) is not None),default=time.time())
         for row in reversed(rows):
@@ -102,12 +126,19 @@ class Queries(UsageQueries):
                 if d.get('resets_at')!=old.get('resets_at'): labels.append('reset_time_changed')
                 if d.get('valid') and old.get('valid') and d['used_percent']<old['used_percent']: labels.append('non_monotonic_snapshot')
             previous[key]=d
-            item={**self.public_event(row),**d,'labels':labels,'age_seconds':max(0,now-row['time'])}
+            item={**self.public_event(row),**d,'labels':labels,'age_seconds':max(0,now-row['time']),
+                  'active_snapshot':row['uid'] in active_uids}
             item['stale']=item['age_seconds']>120;history[row['uid']]=item
-        for row in all_latest:
+        for row in active:
             d=json.loads(row['data']);key=(row['profile'],d.get('limit_id'),d.get('role'))
-            latest[key]=history.get(row['uid'],{**self.public_event(row),**d,'labels':['earlier_than_history_page'],'age_seconds':max(0,now-row['time']),'stale':now-row['time']>120})
-        return {'latest':list(latest.values()),'history':list(reversed(list(history.values()))),'history_capped':len(rows)==2000,'cause':'unknown','account_scope':'may include activity outside observed roots'}
+            latest[key]=history.get(row['uid'],{**self.public_event(row),**d,
+                'labels':['earlier_than_history_page'],'age_seconds':max(0,now-row['time']),
+                'stale':now-row['time']>120,'active_snapshot':True})
+        current=sorted(latest.values(),key=lambda x:(x['profile'],x.get('window_minutes') or 10**12,x.get('role',''),x.get('limit_id','')))
+        return {'latest':current,'history':list(reversed(list(history.values()))),
+                'history_capped':len(rows)==2000,'cause':'unknown',
+                'latest_semantics':'all windows from the newest atomic source snapshot per profile; obsolete limit identifiers remain only in history',
+                'account_scope':'may include activity outside observed roots'}
 
     def cumulative(self,params):
         p={**params,'kind':'cumulative'};where,values=self.filters(p)

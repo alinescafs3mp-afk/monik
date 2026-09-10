@@ -12,5 +12,6 @@ __pycache__/
 config.local.json
 runtime/
 dist/
+build/
 *.egg-info/
 test-results/
