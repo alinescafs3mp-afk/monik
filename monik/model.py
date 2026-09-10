@@ -81,15 +81,19 @@ def usage(value: Any) -> dict:
     out.update(valid=not errors,errors=errors,uncached_input_tokens=i-c if i is not None and c is not None and c<=i else None)
     return out
 
+def limit_identity(value: Any) -> str:
+    return value if isinstance(value,str) and value else 'unknown'
+
+
 def rate_windows(value: Any) -> list[dict]:
     if not isinstance(value,dict): return []
     if isinstance(value.get('rateLimitsByLimitId'),dict):
         buckets=dict(value['rateLimitsByLimitId']);legacy=value.get('rateLimits')
-        if isinstance(legacy,dict): buckets.setdefault(legacy.get('limitId','codex'),legacy)
+        if isinstance(legacy,dict): buckets.setdefault(limit_identity(legacy.get('limitId','codex')),legacy)
     else:
         legacy=value.get('rateLimits',value)
         if not isinstance(legacy,dict): return []
-        buckets={legacy.get('limit_id',legacy.get('limitId','codex')):legacy}
+        buckets={limit_identity(legacy.get('limit_id',legacy.get('limitId','codex'))):legacy}
     out=[]
     for ident,b in buckets.items():
         if not isinstance(b,dict): continue
@@ -97,8 +101,13 @@ def rate_windows(value: Any) -> list[dict]:
         for role in ('primary','secondary'):
             w=b.get(role)
             if not isinstance(w,dict): continue
-            u=w.get('used_percent',w.get('usedPercent'));valid=type(u) in (float,int) and math.isfinite(u) and 0<=u<=100
-            out.append({**common,'role':role,'used_percent':u,'remaining_percent':100-u if valid else None,'window_minutes':w.get('window_minutes',w.get('windowDurationMins')),'resets_at':w.get('resets_at',w.get('resetsAt')),'valid':valid,'raw':w})
+            u=w.get('used_percent',w.get('usedPercent'))
+            valid=type(u) in (float,int) and 0<=u<=100
+            if not valid: u=None
+            minutes=w.get('window_minutes',w.get('windowDurationMins'))
+            if type(minutes) is not int or minutes<=0: minutes=None
+            reset=timestamp(w.get('resets_at',w.get('resetsAt')))
+            out.append({**common,'role':role,'used_percent':u,'remaining_percent':100-u if valid else None,'window_minutes':minutes,'resets_at':reset,'valid':valid,'raw':w})
         if not any(isinstance(b.get(role),dict) for role in ('primary','secondary')):
             out.append({**common,'role':'unavailable','used_percent':None,'remaining_percent':None,'valid':False,'raw':b})
     return out
@@ -137,12 +146,14 @@ def normalize(row: dict,profile: str,thread: str,delivery: str,model: str|None=N
             if fields.get(field) is not None and not isinstance(fields[field], str): fields[field]=None
         out.append({**fields,'kind':kind,'data':clean,'native':identity,'text':text_content(shown)[:65536]})
     if outer=='token_usage_record' or ('usage' in row and 'response_id' in row):
-        add('usage' if p.get('response_id') else 'unsupported_usage',usage(p.get('usage')) if p.get('response_id') else p,p.get('response_id'))
+        response_id=p.get('response_id')
+        identified=isinstance(response_id,str) and bool(response_id)
+        add('usage' if identified else 'unsupported_usage',usage(p.get('usage')) if identified else p,response_id if identified else None)
         if isinstance(p.get('thread_token_usage'),dict): add('cumulative',{'value':p['thread_token_usage'].get('total_tokens'),'counter_epoch':'thread'})
     elif outer=='turn_context' or nested=='thread_settings_applied':
         s=p.get('settings',p)
         if not isinstance(s,dict): s={}
-        values={k:s.get(k) for k in ('model','effort','reasoning_effort','service_tier')}
+        values={k:s.get(k) if isinstance(s.get(k),str) and 0<len(s[k])<=128 else None for k in ('model','effort','reasoning_effort','service_tier')}
         values['effort']=values['effort'] or values['reasoning_effort'];base['model']=values['model'] or model
         add('settings',values)
     elif outer=='session_meta':
