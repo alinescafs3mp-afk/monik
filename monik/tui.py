@@ -121,10 +121,15 @@ def render(page,data,width=100,selected=None):
     for block in lines:
         for line in terminal_text(block).splitlines():
             if not line: wrapped.append('');continue
-            while line:
-                part=clip(line,max(2,width))
-                if not part: break
-                wrapped.append(part);line=line[len(part):]
+            # Each logical line is already sanitized. Walk it once instead of
+            # sanitizing the entire remaining suffix for every terminal row.
+            start=0;cells=0;limit=max(2,width)
+            for index,char in enumerate(line):
+                size=0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in ('W','F') else 1
+                if cells+size>limit:
+                    wrapped.append(line[start:index]);start=index;cells=0
+                cells+=size
+            wrapped.append(line[start:])
     return wrapped
 
 
@@ -203,6 +208,7 @@ def _screen(screen,fetcher,config,page,params):
     profiles=['']+[p['name'] for p in config['profiles']]
     help_open=False
     seek_selected=False
+    rendered_data=None;rendered_key=None;rendered_lines=[]
 
     def draw(y,text,style=0):
         height,width=screen.getmaxyx()
@@ -225,7 +231,13 @@ def _screen(screen,fetcher,config,page,params):
         draw(1,'  '.join(f'{i+1}:{label("pages",p)}'+('*' if page==p else '') for i,p in enumerate(PAGES)))
         draw(2,f"Профиль: {params.get('profile') or 'все'} | Поиск: {params.get('q') or 'нет'} | Обновлено: {last_ok or 'ожидание'}")
         draw(3,error or (f"T: {params['at']}" if params.get('at') else 'Пауза и выход не останавливают сервер или Codex.'))
-        lines=render(page,data,max(1,width-1),selected=selected) if data else ['Загрузка...' if pending else 'Нет данных.']
+        # Key polling and scrolling do not change the formatted snapshot. Retain
+        # the actual data object, not only id(data), so object-ID reuse is safe.
+        render_key=(page,max(1,width-1),selected,bool(pending) if not data else False)
+        if rendered_data is not data or rendered_key!=render_key:
+            rendered_lines=render(page,data,max(1,width-1),selected=selected) if data else ['Загрузка...' if pending else 'Нет данных.']
+            rendered_data=data;rendered_key=render_key
+        lines=rendered_lines
         if help_open:
             lines=['Управление monik',
                 '1–6 или Tab: раздел. p: переключить профиль.',
