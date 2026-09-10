@@ -1,6 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id), F = ['profile', 'thread_id', 'model', 'kind', 'q', 'search_mode', 'view', 'since', 'until', 'at'];
-const S = { tab: 'overview', params: {}, cursor: 0, es: null, authed: false, past: false, pending: 0, before: null, next: null, follow: true, version: 0, timer: null, inflight: false, again: false, detail: null, paused: false, history: [], forceQueued: false, labels: {}, profileCatalogue: [] };
+const TABS = new Set(['overview', 'activity', 'tokens', 'limits', 'tree', 'quality']), LAST_TAB_KEY = 'monik-last-tab';
+function savedTab() { try { const value = localStorage.getItem(LAST_TAB_KEY); return TABS.has(value) ? value : 'overview'; } catch { return 'overview'; } }
+const S = { tab: savedTab(), params: {}, cursor: 0, es: null, authed: false, past: false, pending: 0, before: null, next: null, follow: true, version: 0, timer: null, inflight: false, again: false, detail: null, paused: false, history: [], forceQueued: false, labels: {}, profileCatalogue: [] };
 const number = v => typeof v !== 'number' || !Number.isFinite(v) ? 'нет измерения' : new Intl.NumberFormat('ru-RU').format(v);
 const percent = v => typeof v === 'number' && Number.isFinite(v) ? number(v) + '%' : 'нет измерения';
 const date = v => v === null || v === undefined ? 'время неизвестно' : new Date(typeof v === 'number' ? v * 1000 : v).toLocaleString('ru-RU');
@@ -42,12 +44,13 @@ function evidenceButton(uid, text = 'Источник') { return button(text, ()
 function limitBlock(x) {
     const n = el('div', 'limit-block');
     const val = x.remaining_percent === null || x.remaining_percent === undefined ? 'Нет измерения' : `${number(x.remaining_percent)}% осталось`;
-    append(n, append(el('div', 'limit-title'), el('strong', '', val), el('span', 'small muted', `${x.limit_id} · ${S.labels.windows?.[x.role] || x.role}`)));
+    const headline = x.stale && x.remaining_percent !== null && x.remaining_percent !== undefined ? `Последний известный: ${val}` : val;
+    append(n, append(el('div', 'limit-title'), el('strong', '', headline), el('span', 'small muted', 'Основной лимит')));
     if (x.valid) {
         const bar = document.createElement('progress');
         bar.max = 100;
         bar.value = x.remaining_percent;
-        bar.setAttribute('aria-label', `${x.limit_id}: осталось ${x.remaining_percent}%`);
+        bar.setAttribute('aria-label', `Основной лимит: осталось ${x.remaining_percent}%`);
         n.append(bar);
     }
     append(n, el('div', 'small muted', `Использовано: ${percent(x.used_percent)} · окно: ${number(x.window_minutes)} мин`), el('div', 'small muted', `Сброс: ${date(x.resets_at)} · возраст снимка: ${age(x.age_seconds)}${x.stale ? ' · УСТАРЕЛ' : ''}`));
@@ -184,12 +187,12 @@ function renderLimits(l) {
     const out = el('div', 'stack'), cards = el('div', 'cards');
     for (const x of l.latest) {
         const c = el('article', 'card');
-        append(c, title(`${names[x.profile] || x.profile} · ${x.limit_id}`, x.role), limitBlock(x), chart(l.history.filter(y => y.profile === x.profile && y.limit_id === x.limit_id && y.role === x.role)), el('p', 'small muted', 'График: осталось, 0–100%. Между снимками точное состояние неизвестно.'));
+        append(c, title(names[x.profile] || x.profile, 'Основной лимит учётной записи'), limitBlock(x), chart(l.history.filter(y => y.profile === x.profile)), el('p', 'small muted', 'График: осталось, 0–100%. Между снимками точное состояние неизвестно.'));
         cards.append(c);
     }
     out.append(cards.childElementCount ? cards : empty('Сохранённых снимков лимита пока нет.'));
     const h = el('section', 'panel');
-    append(h, title('История снимков', 'Причины изменений не определяются'), el('p', 'muted', 'Это лимит учётной записи. На него может влиять работа вне наблюдаемых веток. Падения и возвраты процентов не складываются в «расход».'), table(['Профиль / лимит', 'Снимок', 'Осталось', 'Использовано', 'Окно, мин', 'Сброс', 'Источник'], l.history.slice(0, 100).map(x => [`${x.profile} / ${x.limit_id} / ${x.role}`, date(x.event_at ?? x.time), x.remaining_percent === null ? 'нет измерения' : number(x.remaining_percent) + '%', percent(x.used_percent), number(x.window_minutes), date(x.resets_at), evidenceButton(x.uid)])), el('p', 'small muted', `Показано до 100 последних снимков в интерфейсе; API истории ограничен 2000. ${l.history_capped ? 'В API достигнут предел; используй момент T для более ранней истории.' : ''}`));
+    append(h, title('История снимков', 'Причины изменений не определяются'), el('p', 'muted', 'Это основной лимит учётной записи. На него может влиять работа вне наблюдаемых веток. Модельные дополнительные квоты здесь скрыты. Падения и возвраты процентов не складываются в «расход».'), table(['Профиль', 'Снимок', 'Осталось', 'Использовано', 'Окно, мин', 'Сброс', 'Источник'], l.history.slice(0, 100).map(x => [names[x.profile] || x.profile, date(x.event_at ?? x.time), x.remaining_percent === null ? 'нет измерения' : number(x.remaining_percent) + '%', percent(x.used_percent), number(x.window_minutes), date(x.resets_at), evidenceButton(x.uid)])), el('p', 'small muted', `Показано до 100 последних снимков в интерфейсе; API истории ограничен 2000. ${l.history_capped ? 'В API достигнут предел; используй момент T для более ранней истории.' : ''}`));
     out.append(h);
     return out;
 }
@@ -288,10 +291,11 @@ function connect() { if (!S.authed)
     queueRefresh(); }); es.addEventListener('reset', () => { S.cursor = 0; S.pending = 0; if (!S.past)
     queueRefresh(true); }); es.addEventListener('degraded', () => { $('connection').textContent = 'Ошибка хранилища'; $('connection').className = 'pill warn'; }); es.addEventListener('pulse', () => { if (canRefresh() && (S.tab !== 'activity' || S.follow))
     queueRefresh(); }); }
-function setTab(tab) { S.tab = tab; S.before = null; S.history = []; S.follow = true; S.version++; document.querySelectorAll('[data-tab]').forEach(b => { if (b.dataset.tab === tab)
+function markTab() { document.querySelectorAll('[data-tab]').forEach(b => { if (b.dataset.tab === S.tab)
     b.setAttribute('aria-current', 'page');
 else
-    b.removeAttribute('aria-current'); }); refresh(true); }
+    b.removeAttribute('aria-current'); }); }
+function setTab(tab) { if (!TABS.has(tab)) return; S.tab = tab; try { localStorage.setItem(LAST_TAB_KEY, tab); } catch {} S.before = null; S.history = []; S.follow = true; S.version++; markTab(); refresh(true); }
 function toLocal(iso) { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19); }
 function syncFilters() { for (const k of F)
     $(k).value = S.params[k] ? (k === 'at' || k === 'since' || k === 'until' ? toLocal(S.params[k]) : S.params[k]) : (k === 'view' ? 'event' : k === 'search_mode' ? 'prefix' : ''); markMode(); }
@@ -503,6 +507,7 @@ window.addEventListener('hashchange', () => { openHash(); refresh(true); });
 };
     Object.assign(kinds, S.labels.events);
     Object.assign(states, S.labels.states);
+    markTab();
     await loadProfileCatalogue();
     showWorkspace();
     openHash();

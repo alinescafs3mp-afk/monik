@@ -69,6 +69,8 @@ def main():
                     page.click('[data-tab="'+tab+'"]');page.wait_for_timeout(350)
                     check('tab_'+tab,len(page.locator('#content').inner_text())>60 and not page.locator('#error').is_visible())
                     check('layout_'+tab,page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
+                page.click('[data-tab="limits"]');page.wait_for_timeout(250);page.reload();page.wait_for_timeout(350)
+                check('last_tab_persisted',page.locator('[data-tab="limits"]').get_attribute('aria-current')=='page' and 'История снимков' in page.locator('#content').inner_text())
                 page.click('[data-tab="activity"]');page.locator('#feed').wait_for()
                 for i in range(8):
                     marker='LIVE_LATENCY_'+str(i);start=time.monotonic();emit(i,marker);page.get_by_text(marker,exact=True).wait_for(timeout=5000);latency.append(time.monotonic()-start)
@@ -95,7 +97,8 @@ def main():
                 page.evaluate('S.es.close();S.es=null');emit(153,'RECONNECT_CATCHUP');page.wait_for_timeout(350);page.evaluate('connect()');page.get_by_text('RECONNECT_CATCHUP',exact=True).wait_for(timeout=3000)
                 check('sse_reconnect_no_duplicate',page.get_by_text('RECONNECT_CATCHUP',exact=True).count()==1)
                 # A second authenticated tab must not create a second filesystem worker.
-                page2=context.new_page();page2.goto(base);page2.locator('#content .cards').wait_for();page2.wait_for_timeout(300)
+                page2=context.new_page();page2.goto(base);page2.locator('#content > *').first.wait_for();page2.wait_for_timeout(300)
+                check('second_tab_restores_last_page',page2.locator('[data-tab="activity"]').get_attribute('aria-current')=='page')
                 workers=[t for t in threading.enumerate() if t.name=='monik-collector'];check('one_collector_multiple_tabs',len(workers)==1,len(workers));page2.close()
                 page.locator('#feed .event').last.get_by_role('button',name='Детали').click();page.locator('#detail').wait_for();check('paged_safe_details','Provenance' in page.locator('#detail').inner_text());page.click('#close-detail')
                 page.locator('#filter-sheet').evaluate('(e)=>e.open=true');page.fill('#q','RECONNECT_CATCHUP');page.select_option('#search_mode','substring');page.click('#filters button[type="submit"]');page.wait_for_timeout(400)

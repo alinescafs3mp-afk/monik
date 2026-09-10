@@ -98,7 +98,7 @@ class Local(unittest.TestCase):
         by={x['profile']:x for x in result['latest']};self.assertEqual(by['astra']['remaining_percent'],99);self.assertEqual(by['sol']['remaining_percent'],76)
         self.assertTrue(any('non_monotonic_snapshot' in x['labels'] for x in result['history']));self.assertTrue(any('reset_time_changed' in x['labels'] for x in result['history']))
         self.assertEqual(result['cause'],'unknown');self.assertNotIn('spent_percent',result)
-    def test_latest_limits_are_one_atomic_source_snapshot(self):
+    def test_limits_show_only_latest_main_account_primary(self):
         old={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
             'limit_id':'codex','primary':{'used_percent':8,'window_minutes':10080,'resets_at':900}}}}
         current={'timestamp':200,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
@@ -108,28 +108,39 @@ class Local(unittest.TestCase):
         self.put(old,delivery='old');self.put(current,delivery='current')
         live=self.store.limits({})
         self.assertEqual({(x['limit_id'],x['role']) for x in live['latest']},
-                         {('codex_bengalfox','primary'),('codex_bengalfox','secondary')})
-        self.assertEqual(len(live['history']),3)
+                         {('codex','primary')})
+        self.assertEqual(len(live['history']),1)
         self.assertTrue(all(x['active_snapshot'] for x in live['latest']))
+        self.assertNotIn('codex_bengalfox',json.dumps(live))
         historical=self.store.limits({'at':150})
         self.assertEqual([(x['limit_id'],x['remaining_percent']) for x in historical['latest']],
                          [('codex',92)])
-    def test_limit_snapshot_respects_knowledge_cutoff_for_provenance(self):
-        complete={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
-            'limit_id':'codex','primary':{'used_percent':8,'window_minutes':300},
-            'secondary':{'used_percent':12,'window_minutes':10080}}}}
-        secondary_only={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
-            'limit_id':'codex','secondary':{'used_percent':12,'window_minutes':10080}}}}
-        events=normalize(complete,'astra','A','stable-identity')
+    def test_main_limit_snapshot_respects_knowledge_cutoff(self):
+        old={'timestamp':100,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
+            'limit_id':'codex','primary':{'used_percent':8,'window_minutes':10080}}}}
+        late={'timestamp':150,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
+            'limit_id':'codex','primary':{'used_percent':18,'window_minutes':10080}}}}
         with self.store.connect(write=True) as db:
-            for event in events:
-                self.store.put(db,event,{'source':'old','delivery':'old-snapshot','ingested_at':100})
-            for event in normalize(secondary_only,'astra','A','stable-identity'):
-                self.store.put(db,event,{'source':'late','delivery':'late-snapshot','ingested_at':300})
+            for event in normalize(old,'astra','A','old'):
+                self.store.put(db,event,{'source':'old','delivery':'old','ingested_at':100})
+            for event in normalize(late,'astra','A','late'):
+                self.store.put(db,event,{'source':'late','delivery':'late','ingested_at':300})
         historical=self.store.limits({'view':'knowledge','at':200})
-        self.assertEqual({x['role'] for x in historical['latest']},{'primary','secondary'})
+        self.assertEqual([(x['used_percent'],x['role']) for x in historical['latest']],[(8,'primary')])
         live=self.store.limits({})
-        self.assertEqual([x['role'] for x in live['latest']],['secondary'])
+        self.assertEqual([(x['used_percent'],x['role']) for x in live['latest']],[(18,'primary')])
+    def test_main_limit_latest_keeps_quiet_profile_beyond_history_cap(self):
+        def snapshot(timestamp,used):
+            return {'timestamp':timestamp,'type':'event_msg','payload':{'type':'token_count','rate_limits':{
+                'limit_id':'codex','primary':{'used_percent':used,'window_minutes':10080}}}}
+        self.put(snapshot(100,8),profile='astra',delivery='astra-old')
+        for index in range(2000):
+            self.put(snapshot(101+index,index%100),profile='sol',delivery=f'sol-{index}')
+        limits=self.store.limits({})
+        self.assertEqual([x['profile'] for x in limits['latest']],['astra','sol'])
+        self.assertEqual(limits['latest'][0]['labels'],['earlier_than_history_page'])
+        self.assertTrue(limits['latest'][0]['active_snapshot'])
+        self.assertTrue(limits['history_capped'])
     def test_legacy_rate_alias_not_double_counted(self):
         value=json.loads((FX/'app_server_rate_limits_response.json').read_text());out=rate_windows(value.get('result',value))
         self.assertEqual(len({(x['limit_id'],x['role']) for x in out}),len(out))

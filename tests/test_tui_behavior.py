@@ -63,8 +63,10 @@ class TerminalUnit(unittest.TestCase):
         self.assertEqual(number(0), '0')
         self.assertEqual(number(1234567), '1 234 567')
         data = {'latest': [dict(profile='astra', limit_id='codex', role='primary',
-                    remaining_percent=None, window_minutes=[], resets_at='bad', age_seconds=3, stale=False)]}
-        self.assertIn('нет измерения', '\n'.join(render('limits', data)))
+                    remaining_percent=42, window_minutes=[], resets_at='bad', age_seconds=300, stale=True)]}
+        rendered='\n'.join(render('limits', data))
+        self.assertIn('нет измерения',rendered);self.assertIn('Основной лимит',rendered);self.assertNotIn('codex',rendered)
+        self.assertIn('Последний известный остаток: 42%',rendered)
 
     def test_control_sequences_are_inert_and_unicode_width_is_respected(self):
         raw = '\x1b]52;c;clipboard\x07ok\x1b[2J\u202eРусский\x00\ntext'

@@ -6,7 +6,7 @@
   const url = new URL(location.href);
   const state = {hours: presets.includes(Number(url.searchParams.get('hours'))) ? Number(url.searchParams.get('hours')) : 6,
     metric: 'total_tokens', data: null, hidden: new Set(), paused: false, controller: null,
-    generation: 0, timer: null, stream: null, dirty: false, index: null, authenticated: true};
+    generation: 0, timer: null, stream: null, dirty: false, index: null, authenticated: true, anomalyHidden: false};
   const ns = 'http://www.w3.org/2000/svg';
   const fmt = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
   const n = value => typeof value === 'number' && Number.isFinite(value) ? fmt.format(value) : 'нет измерения';
@@ -75,21 +75,27 @@
       b.onclick = () => {if (state.hidden.has(s.profile)) state.hidden.delete(s.profile); else state.hidden.add(s.profile); paintLegend(); paintPlot(); paintTable();};
       out.append(b);
     }
+    const anomaly = node('button', 'graph-legend-button series-anomaly');
+    anomaly.append(node('span', 'graph-swatch'), document.createTextNode('Общая динамика · 0–100'));
+    anomaly.setAttribute('aria-pressed', String(!state.anomalyHidden));
+    anomaly.onclick = () => {state.anomalyHidden = !state.anomalyHidden; paintLegend(); paintPlot();};
+    out.append(anomaly);
     $('graph-legend').replaceChildren(out);
   }
   function paintPlot() {
     const svg = $('graph-svg'), d = state.data, visible = shown();
     const width = Math.max(220, Math.round(svg.parentElement.clientWidth)), height = width < 600 ? 270 : 330;
-    const top = 18, bottom = height - 40, left = 66, right = width - 14;
+    const top = 18, bottom = height - 40, left = 66, right = width - 48;
     state.geometry = {width, left, right}; svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     const values = visible.flatMap(s => s.points.map(rate).filter(v => v !== null));
     const max = Math.max(1, ...values) * 1.12;
     const x = value => left + (value - d.window_start) / (d.window_end - d.window_start) * (right - left);
     const y = value => bottom - value / max * (bottom - top);
-    svg.replaceChildren(svgNode('title', {id: 'graph-title'}, `${metrics[state.metric]}: токенов в минуту, последние ${state.hours} часов`), svgNode('desc', {id: 'graph-description'}, 'Пустые корзины показаны разрывами. Точные значения доступны ползунком и в таблице.'));
+    svg.replaceChildren(svgNode('title', {id: 'graph-title'}, `${metrics[state.metric]}: токенов в минуту и индекс общей динамики, последние ${state.hours} часов`), svgNode('desc', {id: 'graph-description'}, 'Ряды Astra и Sol читаются по левой шкале токенов в минуту. Красная линия общей динамики читается по правой шкале от 0 до 100. Пустые корзины показаны разрывами.'));
     for (let i = 0; i <= 4; i++) {
       const value = i * max / 4, yy = y(value);
       svg.append(svgNode('line', {x1: left, x2: right, y1: yy, y2: yy, class: 'graph-grid'}), svgNode('text', {x: left - 10, y: yy + 4, class: 'graph-axis', 'text-anchor': 'end'}, n(value)));
+      if (!state.anomalyHidden) svg.append(svgNode('text', {x: right + 9, y: yy + 4, class: 'graph-axis graph-anomaly-axis', 'text-anchor': 'start'}, String(i * 25)));
     }
     const ticks = width < 600 ? 3 : 6;
     for (let i = 0; i <= ticks; i++) {
@@ -115,6 +121,21 @@
       }
       flush(); svg.append(group);
     }
+    if (!state.anomalyHidden) {
+      const group = svgNode('g', {class: 'series-anomaly'}); let segment = [];
+      const flush = () => {
+        if (segment.length > 1) group.append(svgNode('path', {d: segment.map((p, i) => `${i ? 'L' : 'M'}${p[0]},${p[1]}`).join(' '), class: 'graph-line graph-anomaly-history'}));
+        segment = [];
+      };
+      for (const p of d.anomaly_series || []) {
+        if (typeof p.score !== 'number') {flush(); continue;}
+        const xx = x((p.start + p.end) / 2), yy = bottom - p.score / 100 * (bottom - top);
+        segment.push([xx, yy]);
+        const dot = svgNode('circle', {cx: xx, cy: yy, r: 2.9, class: 'graph-dot graph-anomaly-dot'});
+        dot.append(svgNode('title', {}, `Общая динамика · ${time(p.end)} · ${p.score}/100 · ${p.score_source_label}`)); group.append(dot);
+      }
+      flush(); svg.append(group);
+    }
     svg.append(svgNode('line', {id: 'graph-cursor', class: 'graph-cursor', x1: right, x2: right, y1: top, y2: bottom}));
     $('graph-empty').hidden = values.length > 0;
     const points = d.series[0]?.points || [];
@@ -132,6 +153,8 @@
       const v = s.points[index];
       out.append(node('span', palette(s), `${s.label}: ${n(v.values[state.metric])} токенов · ${n(rate(v))} ток/мин`));
     }
+    const anomaly = d.anomaly_series?.[index];
+    if (!state.anomalyHidden && anomaly) out.append(node('span', 'series-anomaly', `Общая динамика: ${anomaly.score === null ? 'нет оценки' : anomaly.score + '/100'} · ${anomaly.score_source_label}`));
     $('graph-inspector').replaceChildren(out);
     const g = state.geometry;
     const x = g.left + (((p.start + p.end) / 2) - d.window_start) / (d.window_end - d.window_start) * (g.right - g.left);
@@ -150,7 +173,7 @@
   function paint() {
     paintAnomaly(); paintCards(); paintLegend(); paintPlot(); paintTable();
     const d = state.data;
-    $('graph-step').textContent = `${metrics[state.metric]} · токенов в минуту · шаг ${d.bucket_seconds / 60} мин`;
+    $('graph-step').textContent = `${metrics[state.metric]} · токенов в минуту · шаг ${d.bucket_seconds / 60} мин · красная линия по правой шкале 0–100`;
     $('graph-updated').textContent = `Снимок: ${date(d.window_end)}`;
     $('graph-demo').hidden = !d.demo;
     const bad = d.series.reduce((n, s) => n + s.conflicts + s.invalid + s.unknown_source_time, 0);

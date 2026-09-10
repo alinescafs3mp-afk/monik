@@ -102,6 +102,8 @@ def main():
                 check('anomaly_index_visible',page.locator('#graph-anomaly-value').inner_text()!='—')
                 check('anomaly_profile_breakdown',page.locator('#graph-anomaly-profiles .anomaly-profile').count()==2)
                 check('anomaly_meter_bounded',0<=int(page.locator('#graph-anomaly-value').inner_text())<=100)
+                check('historical_anomaly_line',page.locator('#graph-svg .graph-anomaly-history').count()>0)
+                check('three_graph_rows',page.locator('#graph-legend button').count()==3)
                 check('actual_svg_points',page.locator('#graph-svg .graph-dot').count()>20)
                 check('demo_badge',page.locator('#graph-demo').is_visible())
                 for hours in (24,12,6,3,2,1):

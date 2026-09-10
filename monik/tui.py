@@ -91,8 +91,8 @@ def render(page,data,width=100,selected=None):
     elif page=='limits':
         for item in data.get('latest',[]):
             remaining='нет измерения' if item.get('remaining_percent') is None else number(item['remaining_percent'])+'%'
-            lines += [f"{item['profile']} | {item['limit_id']} | {label('windows',item['role'])}",
-                      f"  Осталось: {remaining} | окно: {number(item.get('window_minutes'))} мин",
+            lines += [f"{item['profile']} | Основной лимит",
+                      f"  {'Последний известный остаток' if item['stale'] else 'Осталось'}: {remaining} | окно: {number(item.get('window_minutes'))} мин",
                       f"  Сброс: {date(item.get('resets_at'))} | возраст: {int(item['age_seconds'])} с"+(' | УСТАРЕЛО' if item['stale'] else ''),'']
         lines.append('Проценты не пересчитываются в токены. Причина изменения снимка неизвестна.')
     elif page=='tree':

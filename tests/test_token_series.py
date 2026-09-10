@@ -179,6 +179,18 @@ class Series(unittest.TestCase):
         self.assertEqual(anomaly['level'],'red')
         self.assertEqual(anomaly['confidence'],'high')
 
+    def test_historical_anomaly_series_matches_live_score_and_is_bounded(self):
+        self.anomaly_baseline(recent_multiplier=4,recent_responses=4)
+        data=self.series(hours=6)
+        line=data['anomaly_series']
+        self.assertEqual(len(line),len(data['series'][0]['points']))
+        self.assertEqual(line[-1]['score'],data['anomaly']['score'])
+        self.assertEqual(line[-1]['score_source'],data['anomaly']['score_source'])
+        self.assertTrue(all(p['score'] is None or 0<=p['score']<=100 for p in line))
+        scores=[p['score'] for p in line if p['score'] is not None]
+        self.assertIn(25,scores)
+        self.assertEqual(scores[-1],100)
+
     def test_strongest_profile_controls_the_overall_alert(self):
         self.anomaly_baseline(recent_multiplier=4,recent_responses=4)
         start=NOW-(6*3600+15*60)
@@ -243,7 +255,7 @@ class API(unittest.TestCase):
             self.assertIn("default-src 'none'",r.headers['content-security-policy'])
         page=self.client.get('/token-graph').text
         script=self.client.get('/token-graph.js').text
-        self.assertIn('graph-anomaly',page);self.assertIn('paintAnomaly',script)
+        self.assertIn('graph-anomaly',page);self.assertIn('paintAnomaly',script);self.assertIn('anomaly_series',script)
         self.login();self.assertEqual(self.client.post('/api/v1/usage-series',json={}).status_code,405)
 
     def test_fixed_time_is_valid_and_future_is_rejected(self):

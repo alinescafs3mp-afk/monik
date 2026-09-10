@@ -6,6 +6,7 @@ Empty buckets are unknown, not proof that Codex consumed zero tokens.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 import time
@@ -90,6 +91,52 @@ def _anomaly(rows, definitions: list[dict]) -> dict[str, Any]:
             'provider_limit_arithmetic':False}
 
 
+def _anomaly_index(rows, definitions: list[dict]) -> dict[str, dict[str, list]]:
+    """Build bounded prefix sums for rolling anomaly samples.
+
+    Every historical point uses the same fixed 15-minute/6-hour definition as
+    the live card.  Prefix sums avoid rescanning six hours of responses for
+    every plotted point.
+    """
+    names=[p['name'] for p in definitions]
+    grouped={name:[] for name in names}
+    for source in rows:
+        row=dict(source)
+        if row['profile'] in grouped: grouped[row['profile']].append(row)
+    indexed={}
+    for name,items in grouped.items():
+        items.sort(key=lambda row:row['event_at'])
+        values={key:[0] for key in ('accepted','invalid','conflicts','measured','total_tokens')}
+        for row in items:
+            accepted=int(row['valid']==1 and not row['disputed'])
+            measured=int(accepted and row['total_tokens'] is not None)
+            increments={'accepted':accepted,'invalid':int(row['valid']==0),
+                        'conflicts':int(bool(row['disputed'])),'measured':measured,
+                        'total_tokens':row['total_tokens'] if measured else 0}
+            for key,value in increments.items(): values[key].append(values[key][-1]+value)
+        indexed[name]={'times':[row['event_at'] for row in items],**values}
+    return indexed
+
+
+def _anomaly_window(index: dict[str, list], start: float, end: float) -> dict[str, Any]:
+    lo=bisect.bisect_left(index['times'],start);hi=bisect.bisect_left(index['times'],end)
+    delta=lambda key:index[key][hi]-index[key][lo]
+    measured=delta('measured')
+    return {'responses':hi-lo,'accepted':delta('accepted'),'invalid':delta('invalid'),
+            'conflicts':delta('conflicts'),'total_tokens':delta('total_tokens') if measured else None}
+
+
+def _anomaly_at(indexed: dict[str, dict[str, list]], definitions: list[dict], end: float) -> dict[str, Any]:
+    rows=[];start=end-(ANOMALY_BASELINE_BUCKETS+1)*ANOMALY_BUCKET_SECONDS
+    for definition in definitions:
+        profile=definition['name'];index=indexed[profile]
+        for slot in range(ANOMALY_BASELINE_BUCKETS+1):
+            left=start+slot*ANOMALY_BUCKET_SECONDS
+            rows.append({'profile':profile,'slot':slot,
+                         **_anomaly_window(index,left,left+ANOMALY_BUCKET_SECONDS)})
+    return _anomaly(rows,definitions)
+
+
 def usage_series(store, profiles: list[dict], *, hours: int = 6,
                  profile: str | None = None, at: float | None = None,
                  now: float | None = None) -> dict[str, Any]:
@@ -149,22 +196,15 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
             FROM response_usage u JOIN events e ON e.id=u.event_id
             WHERE e.event_at IS NULL AND e.ingested_at>=? AND e.ingested_at<?
               AND e.profile IN ({marks}) GROUP BY e.profile''', (start, end, *names)))
-        anomaly_start=end-(ANOMALY_BASELINE_BUCKETS+1)*ANOMALY_BUCKET_SECONDS
-        anomaly_rows=db.execute(f'''WITH measured AS MATERIALIZED (
-            SELECT e.profile,CAST((e.event_at-?)/? AS INTEGER) AS slot,u.valid,u.total_tokens,
+        anomaly_start=start-(ANOMALY_BASELINE_BUCKETS+1)*ANOMALY_BUCKET_SECONDS
+        anomaly_rows=db.execute(f'''SELECT e.profile,e.event_at,u.valid,u.total_tokens,
               EXISTS(SELECT 1 FROM events c INDEXED BY events_conflict_uid WHERE c.kind='conflict'
                 AND json_extract(c.data,'$.canonical_uid')=e.uid
                 AND c.ingested_at<=?) AS disputed
             FROM events e JOIN response_usage u ON u.event_id=e.id
             WHERE e.event_at>=? AND e.event_at<? AND e.ingested_at<=?
               AND e.profile IN ({marks})
-        ) SELECT profile,slot,count(*) AS responses,
-            sum(CASE WHEN valid=1 AND disputed=0 THEN 1 ELSE 0 END) AS accepted,
-            sum(CASE WHEN valid=0 THEN 1 ELSE 0 END) AS invalid,
-            sum(disputed) AS conflicts,
-            sum(CASE WHEN valid=1 AND disputed=0 THEN total_tokens END) AS total_tokens
-          FROM measured GROUP BY profile,slot ORDER BY profile,slot''',
-            (anomaly_start,ANOMALY_BUCKET_SECONDS,end,anomaly_start,end,end,*names)).fetchall()
+            ORDER BY e.profile,e.event_at''',(end,anomaly_start,end,end,*names)).fetchall()
     indexed = {(r['profile'], r['slot']): dict(r) for r in rows}
     series = []
     for definition in selected:
@@ -196,10 +236,18 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
         series.append({'profile': name, 'label': definition.get('label') or {'astra': 'Astra', 'sol': 'Sol'}.get(name, name),
                        'points': points, 'totals': totals, 'measured': measured,
                        **counters, 'unknown_source_time': missing.get(name, 0)})
+    anomaly_index=_anomaly_index(anomaly_rows,selected)
+    anomaly_series=[]
+    for i in range(count):
+        left,right=max(start,first+i*step),min(end,first+(i+1)*step)
+        sample=_anomaly_at(anomaly_index,selected,right)
+        anomaly_series.append({'start':left,'end':right,'partial':right-left<step,
+            'score':sample['score'],'level':sample['level'],'confidence':sample['score_confidence'],
+            'score_source':sample['score_source'],'score_source_label':sample['score_source_label']})
     return {'schema_version': 1, 'hours': hours, 'window_start': start, 'window_end': end,
             'bucket_seconds': step, 'cursor': cursor, 'generated_at': clock,
             'mode': 'historical' if at is not None else 'live', 'series': series,
-            'anomaly':_anomaly(anomaly_rows,selected),
+            'anomaly':_anomaly_at(anomaly_index,selected,end),'anomaly_series':anomaly_series,
             'coverage': 'partial', 'time_basis': 'source_event_time',
             'knowledge_at': end, 'empty_bucket': 'unknown_not_zero',
             'rate_formula': 'bucket_metric * 60 / bucket_seconds; partial buckets not extrapolated',
