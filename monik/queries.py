@@ -52,13 +52,14 @@ class Queries(UsageQueries):
         return {'items':items,'next_before':items[-1]['id'] if len(rows)>limit and after is None else None,'next_after':items[-1]['id'] if items and after is not None else None,'has_more':len(rows)>limit,'order':'ingestion' if after is not None else 'source_time','coverage':'partial','search_semantics':'literal substring' if params.get('search_mode')=='substring' else 'token prefix; no morphology'}
 
     def detail(self,uid,params):
-        where,values=self.filters({k:v for k,v in params.items() if k in ('at','view')})
+        where,values=self.filters({k:v for k,v in params.items() if k in ('at','until','view')})
         with self.connect() as db:
             row=db.execute(f'SELECT e.* FROM events e WHERE uid=? AND {where}',(uid,*values)).fetchone()
             if not row: return None
             out=self.public_event(row,True);out['text']=row['text']
-            # Knowledge-time provenance must not reveal a later delivery.
-            cutoff=params.get('at') if params.get('view')=='knowledge' else None
+            # Match the timeline's upper bounds. The stricter bound also limits
+            # knowledge-time provenance, including its count and paged details.
+            cutoff=min((params[k] for k in ('at','until') if params.get(k) is not None),default=None) if params.get('view')=='knowledge' else None
             clause=' AND ingested_at<=?' if cutoff is not None else ''
             vals=(row['id'],cutoff) if cutoff is not None else (row['id'],)
             out['provenance']=[dict(x) for x in db.execute('SELECT source,epoch,offset,raw_sha256,observed_at,ingested_at FROM provenance WHERE event_id=?'+clause+' ORDER BY ingested_at LIMIT 100',vals)]
