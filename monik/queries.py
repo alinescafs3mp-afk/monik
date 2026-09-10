@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import time
 from .model import FIELDS,iso
+from .usage import UsageQueries
 
-class Queries:
+class Queries(UsageQueries):
     @staticmethod
     def filters(params,alias='e',include_kind=True):
         parts,values=['1=1'],[]
@@ -24,6 +25,9 @@ class Queries:
     @staticmethod
     def public_event(row,detail=False):
         out=dict(row)
+        if out.get('kind')=='tool_call':
+            name=json.loads(out['data']).get('name')
+            out['tool_name']=name[:128] if isinstance(name,str) else None
         for name in ('search_text','hash','rn'): out.pop(name,None)
         if 'data' in out:
             if detail: out['data']=json.loads(out['data'])
@@ -38,6 +42,7 @@ class Queries:
         with self.connect() as db:
             if before is not None:
                 pivot=db.execute('SELECT time FROM events WHERE id=?',(before,)).fetchone()
+                if not pivot: raise ValueError('Pagination cursor no longer exists; refresh the timeline')
                 if pivot:
                     where+=' AND (e.time<? OR (e.time=? AND e.id<?))';values.extend((pivot[0],pivot[0],before))
             if after is not None: where+=' AND e.id>?';values.append(after)
@@ -60,16 +65,6 @@ class Queries:
             out['provenance_count']=db.execute('SELECT count(*) FROM provenance WHERE event_id=?'+clause,vals).fetchone()[0]
             out['raw_policy']='redacted and bounded at ingestion; original payload is not retained'
         return out
-
-    def usage(self,params):
-        where,values=self.filters(params,include_kind=False);columns=FIELDS+('uncached_input_tokens',)
-        sums=','.join(f'sum(CASE WHEN u.valid THEN u.{k} END) AS {k},count(CASE WHEN u.valid THEN u.{k} END) AS {k}_measured' for k in columns)
-        with self.connect() as db:
-            row=dict(db.execute(f'SELECT count(*) AS responses,sum(CASE WHEN u.valid=0 THEN 1 ELSE 0 END) AS invalid,{sums} FROM response_usage u JOIN events e ON e.id=u.event_id WHERE {where}',values).fetchone())
-            groups=[dict(x) for x in db.execute(f'SELECT e.profile,e.thread_id,e.model,count(*) AS responses,sum(CASE WHEN u.valid THEN u.total_tokens END) AS total_tokens FROM response_usage u JOIN events e ON e.id=u.event_id WHERE {where} GROUP BY e.profile,e.thread_id,e.model ORDER BY total_tokens DESC LIMIT 2000',values)]
-        row['cache_hit_ratio']=row['cached_input_tokens']/row['input_tokens'] if row['input_tokens'] and row['cached_input_tokens_measured']==row['input_tokens_measured'] else None
-        row.update(groups=groups,groups_capped=len(groups)==2000,coverage='partial',formula='total=input+output; cached is within input; reasoning is within output; no cumulative counters added',dedup_key='profile,thread_id,response_id')
-        return row
 
     def latest(self,db,profile,kinds,params,thread=None):
         p={k:v for k,v in params.items() if k in ('at','until','view')};p['profile']=profile
@@ -98,7 +93,7 @@ class Queries:
             rows=db.execute(f'SELECT e.* FROM events e WHERE {where} ORDER BY time DESC,id DESC LIMIT 2000',values).fetchall()
             all_latest=db.execute(f'''SELECT * FROM (SELECT e.*,row_number() OVER(PARTITION BY profile,json_extract(data,'$.limit_id'),json_extract(data,'$.role') ORDER BY time DESC,id DESC) AS rn FROM events e WHERE {where}) WHERE rn=1 LIMIT 100''',values).fetchall()
         latest,history,previous={},{},{}
-        now=params.get('at') or time.time()
+        now=min((params[k] for k in ('at','until') if params.get(k) is not None),default=time.time())
         for row in reversed(rows):
             d=json.loads(row['data']);key=(row['profile'],d.get('limit_id'),d.get('role'));labels=[];old=previous.get(key)
             if old:
@@ -115,7 +110,7 @@ class Queries:
 
     def cumulative(self,params):
         p={**params,'kind':'cumulative'};where,values=self.filters(p)
-        with self.connect() as db: rows=db.execute(f'SELECT e.* FROM events e WHERE {where} ORDER BY time,id LIMIT 5000',values).fetchall()
+        with self.connect() as db: rows=db.execute(f'SELECT e.* FROM events e WHERE {where} ORDER BY time DESC,id DESC LIMIT 5000',values).fetchall()[::-1]
         previous={};items=[];counts={'baselines':0,'repeats':0,'negative_changes':0,'known_positive_delta':0}
         for row in rows:
             d=json.loads(row['data']);value=d.get('value');key=(row['profile'],row['thread_id'],d.get('counter_epoch'))
@@ -147,7 +142,7 @@ class Queries:
                 n['state']={'task_started':'last_task_started','task_complete':'last_task_complete','turn_aborted':'last_turn_aborted'}[r['kind']]
                 n['state_evidence_at']=r['time']
             n.update(last_evidence_at=r['time'],uid=r['uid'],source_kind=r['kind'])
-        now=params.get('at') or time.time()
+        now=min((params[k] for k in ('at','until') if params.get(k) is not None),default=time.time())
         for n in nodes.values():
             n['age_seconds']=max(0,now-n.get('state_evidence_at',n['last_evidence_at']));n['stale']=n['age_seconds']>120 and n['state'] not in ('CLOSED','CANCELLED')
         return {'items':list(nodes.values()),'coverage':'partial; snapshot topology/status is known only from observation time','capped':len(rows)==6000}
@@ -158,11 +153,11 @@ class Queries:
             name=p['name'];root=p.get('root_id')
             with self.connect() as db:
                 # A current designation is not silently backdated into a historical view.
-                if params.get('at') is not None:
+                if params.get('at') is not None or params.get('until') is not None:
                     binding=self.latest(db,name,['root_binding'],params)
                     root=json.loads(binding['data']).get('root_id') if binding else None
                     if root is None:
-                        wh,vs=self.filters({'profile':name,**{k:v for k,v in params.items() if k in ('at','view')}})
+                        wh,vs=self.filters({'profile':name,**{k:v for k,v in params.items() if k in ('at','until','view')}})
                         r=db.execute(f"SELECT e.thread_id FROM events e WHERE {wh} AND kind='thread' AND json_extract(data,'$.root_evidence')=1 ORDER BY time DESC,id DESC LIMIT 1",vs).fetchone()
                         root=r[0] if r else None
                 setting=self.settings(db,name,params,root)
