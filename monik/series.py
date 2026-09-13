@@ -22,6 +22,61 @@ ANOMALY_BUCKET_SECONDS = 15 * 60
 ANOMALY_BASELINE_BUCKETS = 24
 LIMIT_STALE_SECONDS = 120
 LIMIT_LOOKBACK_SECONDS = 7 * 24 * 3600
+LIMIT_RATE_TARGET_SECONDS = 30 * 60
+LIMIT_RATE_TARGETS_SECONDS = (LIMIT_RATE_TARGET_SECONDS, 60 * 60, 2 * 60 * 60)
+LIMIT_RATE_TOLERANCE_SECONDS = 5 * 60
+LIMIT_RESET_TOLERANCE_SECONDS = 120
+
+
+def _limit_rate(current: dict | None, samples: list[dict]) -> dict[str, Any]:
+    """Estimate live quota velocity from two provider-percent observations.
+
+    The provider does not expose an absolute quota denominator. A bounded
+    trailing delta is therefore the closest truthful `%/hour` projection; it
+    deliberately never converts token counts into provider percentage.
+    """
+    result = {'rate_percent_per_hour': None, 'rate_delta_percent': None,
+              'rate_elapsed_seconds': None, 'rate_basis_start': None,
+              'rate_basis_end': current['event_at'] if current is not None else None,
+              'rate_target_seconds_used': None,
+              'rate_state': 'insufficient_history'}
+    if current is None:
+        return result
+    window = current.get('window_minutes'); reset = current.get('resets_at')
+    fallback=None; rejected=set()
+    for target_seconds in LIMIT_RATE_TARGETS_SECONDS:
+        target = current['event_at'] - target_seconds
+        candidates = [row for row in samples if row['event_at'] < current['event_at']
+                      and abs(row['event_at'] - target) <= LIMIT_RATE_TOLERANCE_SECONDS]
+        if not candidates:
+            continue
+        baseline = min(candidates, key=lambda row: (abs(row['event_at'] - target),
+                                                    -row['event_at']))
+        old_window = baseline.get('window_minutes'); old_reset = baseline.get('resets_at')
+        if (not all(isinstance(value, (int, float)) and math.isfinite(value)
+                    for value in (window, old_window, reset, old_reset))
+                or abs(window-old_window) > 1
+                or abs(reset-old_reset) > LIMIT_RESET_TOLERANCE_SECONDS):
+            rejected.add('window_changed');continue
+        elapsed=current['event_at']-baseline['event_at']
+        delta=current['used_percent']-baseline['used_percent']
+        if delta < 0:
+            rejected.add('counter_decreased');continue
+        candidate={**result,'rate_percent_per_hour':round(delta*3600/elapsed,3),
+                   'rate_delta_percent':delta,'rate_elapsed_seconds':elapsed,
+                   'rate_basis_start':baseline['event_at'],
+                   'rate_target_seconds_used':target_seconds,
+                   'rate_state':'steady' if delta == 0 else 'measured'}
+        if delta > 0:
+            return candidate
+        fallback=candidate
+    if fallback is not None:
+        return fallback
+    if 'window_changed' in rejected:
+        result['rate_state']='window_changed'
+    elif 'counter_decreased' in rejected:
+        result['rate_state']='counter_decreased'
+    return result
 
 
 def _anomaly_summary(label: str, buckets: dict[int, dict]) -> dict[str, Any]:
@@ -208,6 +263,7 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
               AND e.profile IN ({marks})
             ORDER BY e.profile,e.event_at''',(end,anomaly_start,end,end,*names)).fetchall()
         requested=','.join('(?)' for _ in names)
+        limit_scan_start=max(0,start-max(LIMIT_RATE_TARGETS_SECONDS)-LIMIT_RATE_TOLERANCE_SECONDS)
         limit_rows=db.execute(f'''WITH requested(profile) AS (VALUES {requested}),
             window_limits AS MATERIALIZED (
                 SELECT e.profile,e.event_at,e.time,e.id,
@@ -225,12 +281,31 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
                       AND json_extract(c.data,'$.canonical_uid')=e.uid
                       AND c.ingested_at<=?)
             ), slotted AS (
-                SELECT *,CAST((event_at-?)/? AS INTEGER) AS slot
+                SELECT *,CAST(event_at/? AS INTEGER)-? AS slot
                 FROM window_limits WHERE event_at>=? AND event_at<?
             ), bucketed AS (
-                SELECT 'bucket' AS scope,profile,slot,event_at,used_percent,
+                SELECT profile,slot,event_at,id,used_percent,
                   row_number() OVER(PARTITION BY profile,slot ORDER BY event_at DESC,id DESC) AS rn
                 FROM slotted
+            ), bucket_values AS (
+                SELECT 'bucket' AS scope,b.profile,b.slot,b.event_at,b.used_percent,
+                  CAST(json_extract(e.data,'$.resets_at') AS REAL) AS resets_at,
+                  CAST(json_extract(e.data,'$.window_minutes') AS REAL) AS window_minutes
+                FROM bucketed b JOIN events e ON e.id=b.id WHERE b.rn=1
+            ), rate_slotted AS (
+                SELECT *,CAST(event_at/60 AS INTEGER) AS rate_slot
+                FROM window_limits WHERE event_at>=? AND event_at<?
+            ), rate_bucketed AS (
+                SELECT profile,rate_slot,event_at,id,used_percent,
+                  row_number() OVER(PARTITION BY profile,rate_slot
+                    ORDER BY event_at DESC,id DESC) AS rn
+                FROM rate_slotted
+            ), rate_values AS (
+                SELECT 'rate_sample' AS scope,b.profile,b.rate_slot AS slot,
+                  b.event_at,b.used_percent,
+                  CAST(json_extract(e.data,'$.resets_at') AS REAL) AS resets_at,
+                  CAST(json_extract(e.data,'$.window_minutes') AS REAL) AS window_minutes
+                FROM rate_bucketed b JOIN events e ON e.id=b.id WHERE b.rn=1
             ), latest_ids AS (
                 SELECT r.profile,(SELECT e.id FROM events e INDEXED BY events_profile_time
                     WHERE e.profile=r.profile AND e.kind='limit' AND e.event_at IS NOT NULL
@@ -248,13 +323,20 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
                 FROM requested r
             ), latest AS (
                 SELECT 'latest' AS scope,e.profile,-1 AS slot,e.event_at,
-                  CAST(json_extract(e.data,'$.used_percent') AS REAL) AS used_percent
+                  CAST(json_extract(e.data,'$.used_percent') AS REAL) AS used_percent,
+                  CAST(json_extract(e.data,'$.resets_at') AS REAL) AS resets_at,
+                  CAST(json_extract(e.data,'$.window_minutes') AS REAL) AS window_minutes
                 FROM latest_ids l JOIN events e ON e.id=l.id
             )
-            SELECT scope,profile,slot,event_at,used_percent FROM bucketed WHERE rn=1
+            SELECT scope,profile,slot,event_at,used_percent,resets_at,window_minutes
+              FROM bucket_values
             UNION ALL
-            SELECT scope,profile,slot,event_at,used_percent FROM latest''',
-            (*names,start,end,end,end,first,step,start,end,
+            SELECT scope,profile,slot,event_at,used_percent,resets_at,window_minutes
+              FROM rate_values
+            UNION ALL
+            SELECT scope,profile,slot,event_at,used_percent,resets_at,window_minutes FROM latest''',
+            (*names,limit_scan_start,end,end,end,step,int(first//step),start,end,
+             limit_scan_start,end,
              max(0,end-LIMIT_LOOKBACK_SECONDS),end,end,end)).fetchall()
     indexed = {(r['profile'], r['slot']): dict(r) for r in rows}
     series = []
@@ -299,35 +381,51 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
             {'astra':'Astra','sol':'Sol'}.get(definition['name'],definition['name'])
             for definition in selected}
     latest_index={row['profile']:dict(row) for row in limit_rows if row['scope']=='latest'}
+    limit_samples={name:[] for name in names}
+    for row in limit_rows:
+        if row['scope']=='rate_sample' and row['profile'] in limit_samples:
+            limit_samples[row['profile']].append(dict(row))
+    for samples in limit_samples.values():
+        samples.sort(key=lambda row:row['event_at'])
     limit_latest=[]
     for definition in selected:
         name=definition['name'];row=latest_index.get(name)
         event_at=row['event_at'] if row is not None else None
         age=max(0,end-event_at) if event_at is not None else None
         limit_latest.append({'profile':name,'label':labels[name],
-            'used_percent':row['used_percent'] if row is not None else None,
             'event_at':event_at,'age_seconds':age,
-            'stale':age>LIMIT_STALE_SECONDS if age is not None else None})
+            'stale':age>LIMIT_STALE_SECONDS if age is not None else None,
+            **_limit_rate(row,limit_samples[name])})
     limit_index={(row['profile'],row['slot']):dict(row)
                  for row in limit_rows if row['scope']=='bucket'}
     limit_series=[]
     for i in range(count):
         left,right=max(start,first+i*step),min(end,first+(i+1)*step)
         observed=[limit_index[(name,i)] for name in names if (name,i) in limit_index]
-        winner=max(observed,key=lambda row:row['used_percent'],default=None)
+        rates=[(row,_limit_rate(row,limit_samples[row['profile']])) for row in observed]
+        measured=[(row,rate) for row,rate in rates
+                  if rate['rate_percent_per_hour'] is not None]
+        winner=max(measured,key=lambda item:item[1]['rate_percent_per_hour'],default=None)
         limit_series.append({'start':left,'end':right,'partial':right-left<step,
-            'used_percent':winner['used_percent'] if winner is not None else None,
-            'profile':winner['profile'] if winner is not None else None,
-            'profile_label':labels[winner['profile']] if winner is not None else None,
-            'measured_profiles':len(observed),
-            'profiles':{row['profile']:row['used_percent'] for row in observed}})
+            'rate_percent_per_hour':winner[1]['rate_percent_per_hour'] if winner else None,
+            'profile':winner[0]['profile'] if winner else None,
+            'profile_label':labels[winner[0]['profile']] if winner else None,
+            'measured_profiles':len(measured),
+            'rates':{row['profile']:rate['rate_percent_per_hour']
+                     for row,rate in measured},
+            'rate_elapsed_seconds':winner[1]['rate_elapsed_seconds'] if winner else None,
+            'rate_delta_percent':winner[1]['rate_delta_percent'] if winner else None})
     return {'schema_version': 1, 'hours': hours, 'window_start': start, 'window_end': end,
             'bucket_seconds': step, 'cursor': cursor, 'generated_at': clock,
             'mode': 'historical' if at is not None else 'live', 'series': series,
             'anomaly':_anomaly_at(anomaly_index,selected,end),'anomaly_series':anomaly_series,
-            'limit':{'latest':limit_latest,'aggregation':'maximum_observed_profile_percent',
-                'scope':'account-wide codex primary limit for each configured profile',
-                'unknown_policy':'missing snapshots do not become zero; percentages are never summed',
+            'limit':{'latest':limit_latest,'aggregation':'maximum_observed_rate_percent_per_hour',
+                'scope':'live hourly projection from account-wide codex primary limit observations',
+                'rate_basis':'trailing provider-percent delta; token counts are never converted to quota',
+                'rate_target_seconds':LIMIT_RATE_TARGET_SECONDS,
+                'rate_targets_seconds':LIMIT_RATE_TARGETS_SECONDS,
+                'rate_tolerance_seconds':LIMIT_RATE_TOLERANCE_SECONDS,
+                'unknown_policy':'missing or incomparable snapshots stay unknown; profile rates are never summed',
                 'stale_after_seconds':LIMIT_STALE_SECONDS,
                 'latest_lookback_seconds':LIMIT_LOOKBACK_SECONDS},
             'limit_series':limit_series,

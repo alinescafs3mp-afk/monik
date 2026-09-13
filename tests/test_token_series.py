@@ -36,12 +36,13 @@ class Series(unittest.TestCase):
                 self.store.put(db, event, {'source': 'synthetic', 'delivery': delivery, 'ingested_at': ingested})
 
     def put_limit(self, used, profile='astra', at=NOW-100, ingested=NOW-90,
-                  delivery=None, thread='root', limit_id='codex', role='primary'):
+                  delivery=None, thread='root', limit_id='codex', role='primary',
+                  resets_at=NOW+86400):
         delivery = delivery or f'limit:{profile}:{at}:{used}'
         row = {'type': 'event_msg', 'timestamp': at, 'payload': {
             'type': 'token_count', 'thread_id': thread, 'rate_limits': {'rateLimits': {
                 'limitId': limit_id, role: {'usedPercent': used,
-                    'windowDurationMins': 10080, 'resetsAt': NOW+86400}}}}}
+                    'windowDurationMins': 10080, 'resetsAt': resets_at}}}}}
         with self.store.connect(write=True) as db:
             for event in normalize(row, profile, thread, delivery):
                 self.store.put(db, event, {'source': 'synthetic-limit',
@@ -162,43 +163,98 @@ class Series(unittest.TestCase):
         self.assertTrue(all(s['responses']==0 for s in data['series']))
         self.assertEqual(data['cursor'],self.store.sequence())
 
-    def test_limit_percentages_and_line_use_maximum_not_sum(self):
-        self.put_limit(80, profile='astra', at=NOW-500, ingested=NOW-499)
-        self.put_limit(40, profile='sol', at=NOW-490, ingested=NOW-489)
-        self.put_limit(60, profile='sol', at=NOW-100, ingested=NOW-99)
+    def test_limit_hourly_rate_is_trailing_projection_and_line_uses_maximum(self):
+        self.put_limit(78, profile='astra', at=NOW-1900, ingested=NOW-1899)
+        self.put_limit(80, profile='astra', at=NOW-100, ingested=NOW-99)
+        self.put_limit(39, profile='sol', at=NOW-1900, ingested=NOW-1899)
+        self.put_limit(40, profile='sol', at=NOW-100, ingested=NOW-99)
         data=self.series()
         latest={item['profile']:item for item in data['limit']['latest']}
-        self.assertEqual(latest['astra']['used_percent'],80)
-        self.assertTrue(latest['astra']['stale'])
-        self.assertEqual(latest['sol']['used_percent'],60)
+        self.assertEqual(latest['astra']['rate_percent_per_hour'],4)
+        self.assertEqual(latest['astra']['rate_delta_percent'],2)
+        self.assertFalse(latest['astra']['stale'])
+        self.assertEqual(latest['sol']['rate_percent_per_hour'],2)
         self.assertFalse(latest['sol']['stale'])
-        measured=[point for point in data['limit_series'] if point['used_percent'] is not None]
-        self.assertEqual([point['used_percent'] for point in measured],[80,60])
-        self.assertEqual(measured[0]['measured_profiles'],2)
-        self.assertEqual(measured[0]['profile'],'astra')
-        self.assertEqual(data['limit']['aggregation'],'maximum_observed_profile_percent')
+        self.assertNotIn('used_percent',latest['astra'])
+        measured=[point for point in data['limit_series']
+                  if point['rate_percent_per_hour'] is not None]
+        self.assertEqual(measured[-1]['rate_percent_per_hour'],4)
+        self.assertEqual(measured[-1]['measured_profiles'],2)
+        self.assertEqual(measured[-1]['profile'],'astra')
+        self.assertEqual(data['limit']['aggregation'],'maximum_observed_rate_percent_per_hour')
+        self.assertEqual(data['limit']['rate_target_seconds'],30*60)
         self.assertEqual(data['limit']['latest_lookback_seconds'],7*24*3600)
-        self.assertNotIn(120,[point['used_percent'] for point in measured])
+        self.assertNotEqual(measured[-1]['rate_percent_per_hour'],6)
+        for hours in WINDOWS:
+            current={item['profile']:item['rate_percent_per_hour']
+                     for item in self.series(hours=hours)['limit']['latest']}
+            self.assertEqual(current,{'astra':4,'sol':2})
 
-    def test_limit_history_respects_knowledge_horizon_and_unknown_is_not_zero(self):
+    def test_limit_rate_respects_knowledge_horizon_and_unknown_is_not_zero(self):
+        self.put_limit(70, at=NOW-1900, ingested=NOW-1890)
         self.put_limit(72, at=NOW-100, ingested=NOW-10)
         historical=self.series(at=NOW-20)
-        self.assertIsNone(historical['limit']['latest'][0]['used_percent'])
-        self.assertTrue(all(point['used_percent'] is None for point in historical['limit_series']))
-        self.assertEqual(self.series()['limit']['latest'][0]['used_percent'],72)
+        self.assertIsNone(historical['limit']['latest'][0]['rate_percent_per_hour'])
+        self.assertTrue(all(point['rate_percent_per_hour'] is None
+                            for point in historical['limit_series']))
+        self.assertEqual(self.series()['limit']['latest'][0]['rate_percent_per_hour'],4)
+
+    def test_current_limit_rate_is_independent_of_chart_bucket_size(self):
+        self.put_limit(10, at=NOW-2200, ingested=NOW-2199)
+        self.put_limit(11, at=NOW-1801, ingested=NOW-1800)
+        self.put_limit(12, at=NOW-400, ingested=NOW-399)
+        rates=[]
+        for hours in WINDOWS:
+            latest=self.series(hours=hours)['limit']['latest'][0]
+            rates.append(latest['rate_percent_per_hour'])
+        self.assertEqual(rates,[4]*len(WINDOWS))
+
+    def test_limit_rate_expands_window_when_half_hour_counter_is_flat(self):
+        self.put_limit(20, at=NOW-3700, ingested=NOW-3699)
+        self.put_limit(21, at=NOW-1900, ingested=NOW-1899)
+        self.put_limit(21, at=NOW-100, ingested=NOW-99)
+        latest=self.series()['limit']['latest'][0]
+        self.assertEqual(latest['rate_percent_per_hour'],1)
+        self.assertEqual(latest['rate_elapsed_seconds'],3600)
+        self.assertEqual(latest['rate_state'],'measured')
+
+    def test_token_volume_never_fabricates_a_limit_rate(self):
+        self.put_limit(20, at=NOW-100, ingested=NOW-99)
+        self.put(amount=10_000_000, at=NOW-50, ingested=NOW-49)
+        latest=self.series()['limit']['latest'][0]
+        self.assertIsNone(latest['rate_percent_per_hour'])
+        self.assertEqual(latest['rate_state'],'insufficient_history')
+
+    def test_limit_rate_is_unknown_across_reset_or_without_half_hour_basis(self):
+        self.put_limit(99, at=NOW-1900, ingested=NOW-1899, resets_at=NOW-1000)
+        self.put_limit(2, at=NOW-100, ingested=NOW-99, resets_at=NOW+86400)
+        data=self.series()
+        self.assertIsNone(data['limit']['latest'][0]['rate_percent_per_hour'])
+        self.assertEqual(data['limit']['latest'][0]['rate_state'],'window_changed')
+        with tempfile.TemporaryDirectory() as folder:
+            store=Store(Path(folder)/'own.sqlite')
+            original=self.store;self.store=store
+            try:
+                self.put_limit(12, at=NOW-100, ingested=NOW-99)
+                only=self.series()
+                self.assertIsNone(only['limit']['latest'][0]['rate_percent_per_hour'])
+                self.assertEqual(only['limit']['latest'][0]['rate_state'],'insufficient_history')
+            finally:self.store=original
 
     def test_limit_line_omits_side_quotas_secondary_and_disputed_values(self):
         self.put_limit(30, delivery='account')
         self.put_limit(99, delivery='model', limit_id='codex_bengalfox')
         self.put_limit(95, delivery='secondary', role='secondary')
         self.put_limit(80, delivery='account', ingested=NOW-20)
-        self.assertIsNone(self.series()['limit']['latest'][0]['used_percent'])
+        self.assertIsNone(self.series()['limit']['latest'][0]['rate_percent_per_hour'])
         earlier=self.series(at=NOW-30)
-        self.assertEqual(earlier['limit']['latest'][0]['used_percent'],30)
-        self.assertNotIn(99,[p['used_percent'] for p in earlier['limit_series']])
+        self.assertIsNone(earlier['limit']['latest'][0]['rate_percent_per_hour'])
+        self.assertNotIn(99,[p['rate_percent_per_hour'] for p in earlier['limit_series']])
 
     def test_limit_profile_filter_is_preserved(self):
+        self.put_limit(24, profile='astra', at=NOW-1900, ingested=NOW-1899)
         self.put_limit(25, profile='astra')
+        self.put_limit(54, profile='sol', at=NOW-1900, ingested=NOW-1899)
         self.put_limit(55, profile='sol')
         data=self.series(profile='sol')
         self.assertEqual([item['profile'] for item in data['limit']['latest']],['sol'])
@@ -310,7 +366,7 @@ class API(unittest.TestCase):
         page=self.client.get('/token-graph').text
         script=self.client.get('/token-graph.js').text
         self.assertIn('graph-anomaly',page);self.assertIn('paintAnomaly',script);self.assertIn('anomaly_series',script)
-        self.assertIn('limit_series',script);self.assertIn('series-limit',script)
+        self.assertIn('rate_percent_per_hour',script);self.assertIn('series-limit',script)
         self.login();payload=self.client.get('/api/v1/usage-series').json()
         self.assertIn('limit',payload);self.assertIn('limit_series',payload)
         self.login();self.assertEqual(self.client.post('/api/v1/usage-series',json={}).status_code,405)

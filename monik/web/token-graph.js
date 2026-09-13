@@ -11,6 +11,11 @@
   const ns = 'http://www.w3.org/2000/svg';
   const fmt = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 1});
   const n = value => typeof value === 'number' && Number.isFinite(value) ? fmt.format(value) : 'нет измерения';
+  const niceMax = values => {
+    const peak = Math.max(0, ...values), raw = Math.max(1, peak * 1.12);
+    const magnitude = 10 ** Math.floor(Math.log10(raw)), normalized = raw / magnitude;
+    return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10) * magnitude;
+  };
   const time = value => new Date(value * 1000).toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'});
   const date = value => new Date(value * 1000).toLocaleString('ru-RU');
   const node = (tag, className, text) => {const e = document.createElement(tag); if (className) e.className = className; if (text !== undefined) e.textContent = text; return e;};
@@ -50,10 +55,12 @@
     const profiles = document.createDocumentFragment();
     for (const p of a?.profiles || []) {
       const limit = limits.get(p.profile), chip = node('span', `anomaly-profile anomaly-${p.level}`);
-      const used = typeof limit?.used_percent === 'number' ? `${n(limit.used_percent)}%` : 'нет измерения';
+      const live = typeof limit?.rate_percent_per_hour === 'number'
+        ? `≈${n(limit.rate_percent_per_hour)}%/ч · окно ${n(limit.rate_elapsed_seconds / 60)} мин`
+        : 'нет оценки';
       chip.append(node('span', '', `${p.label}: ${p.score ?? '—'}`),
-        node('small', 'anomaly-profile-limit', `Лимит: ${used}${limit?.stale ? ' · снимок устарел' : ''}`));
-      if (typeof limit?.event_at === 'number') chip.title = `Снимок лимита: ${date(limit.event_at)}`;
+        node('small', 'anomaly-profile-limit', `Темп лимита: ${live}${limit?.stale ? ' · данные устарели' : ''}`));
+      if (typeof limit?.rate_basis_start === 'number') chip.title = `Оценка по provider-счётчику: ${date(limit.rate_basis_start)} — ${date(limit.rate_basis_end)}`;
       profiles.append(chip);
     }
     $('graph-anomaly-profiles').replaceChildren(profiles);
@@ -90,7 +97,7 @@
     anomaly.onclick = () => {state.anomalyHidden = !state.anomalyHidden; paintLegend(); paintPlot();};
     out.append(anomaly);
     const limit = node('button', 'graph-legend-button series-limit');
-    limit.append(node('span', 'graph-swatch'), document.createTextNode('Расход лимита · максимум · %'));
+    limit.append(node('span', 'graph-swatch'), document.createTextNode('Темп лимита · максимум · %/ч'));
     limit.setAttribute('aria-pressed', String(!state.limitHidden));
     limit.onclick = () => {state.limitHidden = !state.limitHidden; paintLegend(); paintPlot();};
     out.append(limit);
@@ -99,18 +106,23 @@
   function paintPlot() {
     const svg = $('graph-svg'), d = state.data, visible = shown();
     const width = Math.max(220, Math.round(svg.parentElement.clientWidth)), height = width < 600 ? 270 : 330;
-    const top = 18, bottom = height - 40, left = 66, right = width - 48;
+    const dualRightAxis = !state.anomalyHidden && !state.limitHidden && width >= 680;
+    const top = 24, bottom = height - 40, left = 66, right = width - (dualRightAxis ? 100 : 48);
     state.geometry = {width, left, right}; svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     const values = visible.flatMap(s => s.points.map(rate).filter(v => v !== null));
     const max = Math.max(1, ...values) * 1.12;
+    const limitValues = (d.limit_series || []).map(p => p.rate_percent_per_hour).filter(v => typeof v === 'number');
+    const limitMax = niceMax(limitValues);
     const x = value => left + (value - d.window_start) / (d.window_end - d.window_start) * (right - left);
     const y = value => bottom - value / max * (bottom - top);
-    svg.replaceChildren(svgNode('title', {id: 'graph-title'}, `${metrics[state.metric]}: токенов в минуту, общая динамика и расход лимита, последние ${state.hours} часов`), svgNode('desc', {id: 'graph-description'}, 'Ряды Astra и Sol читаются по левой шкале токенов в минуту. Красная линия общей динамики и чёрная линия расхода лимита читаются по правой шкале от 0 до 100. Лимиты профилей не суммируются: линия показывает максимальный наблюдавшийся процент. Пустые корзины показаны разрывами.'));
+    svg.replaceChildren(svgNode('title', {id: 'graph-title'}, `${metrics[state.metric]}: токенов в минуту, общая динамика и темп лимита, последние ${state.hours} часов`), svgNode('desc', {id: 'graph-description'}, 'Ряды Astra и Sol читаются по левой шкале токенов в минуту. Красная линия — индекс общей динамики от 0 до 100. Чёрная линия — прогноз расхода лимита в процентах за час по своей автоматически подобранной шкале. Профильные темпы не суммируются: линия показывает максимальную оценку.'));
     for (let i = 0; i <= 4; i++) {
       const value = i * max / 4, yy = y(value);
       svg.append(svgNode('line', {x1: left, x2: right, y1: yy, y2: yy, class: 'graph-grid'}), svgNode('text', {x: left - 10, y: yy + 4, class: 'graph-axis', 'text-anchor': 'end'}, n(value)));
-      if (!state.anomalyHidden || !state.limitHidden) svg.append(svgNode('text', {x: right + 9, y: yy + 4, class: 'graph-axis graph-index-axis', 'text-anchor': 'start'}, String(i * 25)));
+      if (!state.anomalyHidden && (state.limitHidden || dualRightAxis)) svg.append(svgNode('text', {x: right + 9, y: yy + 4, class: 'graph-axis graph-anomaly-axis', 'text-anchor': 'start'}, String(i * 25)));
+      if (!state.limitHidden) svg.append(svgNode('text', {x: right + (dualRightAxis ? 52 : 9), y: yy + 4, class: 'graph-axis graph-limit-axis', 'text-anchor': 'start'}, n(i * limitMax / 4)));
     }
+    if (!state.limitHidden) svg.append(svgNode('text', {x: right + (dualRightAxis ? 52 : 9), y: 12, class: 'graph-axis graph-limit-axis graph-axis-title'}, '%/ч'));
     const ticks = width < 600 ? 3 : 6;
     for (let i = 0; i <= ticks; i++) {
       const moment = d.window_start + i / ticks * (d.window_end - d.window_start);
@@ -161,17 +173,17 @@
         segment = [];
       };
       for (const p of d.limit_series || []) {
-        if (typeof p.used_percent !== 'number') {flush(); continue;}
-        const xx = x((p.start + p.end) / 2), yy = bottom - p.used_percent / 100 * (bottom - top);
+        if (typeof p.rate_percent_per_hour !== 'number') {flush(); continue;}
+        const xx = x((p.start + p.end) / 2), yy = bottom - p.rate_percent_per_hour / limitMax * (bottom - top);
         segment.push([xx, yy]);
         const dot = svgNode('circle', {cx: xx, cy: yy, r: 3.1, class: 'graph-dot graph-limit-dot'});
-        dot.append(svgNode('title', {}, `Расход лимита · ${time(p.end)} · ${n(p.used_percent)}% · максимум: ${p.profile_label} · измерено профилей: ${p.measured_profiles}`)); group.append(dot);
+        dot.append(svgNode('title', {}, `Темп лимита · ${time(p.end)} · ≈${n(p.rate_percent_per_hour)}%/ч · максимум: ${p.profile_label} · окно оценки ${n(p.rate_elapsed_seconds / 60)} мин`)); group.append(dot);
       }
       flush(); svg.append(group);
     }
     svg.append(svgNode('line', {id: 'graph-cursor', class: 'graph-cursor', x1: right, x2: right, y1: top, y2: bottom}));
     const auxiliary = (!state.anomalyHidden && (d.anomaly_series || []).some(p => typeof p.score === 'number'))
-      || (!state.limitHidden && (d.limit_series || []).some(p => typeof p.used_percent === 'number'));
+      || (!state.limitHidden && (d.limit_series || []).some(p => typeof p.rate_percent_per_hour === 'number'));
     $('graph-empty').hidden = values.length > 0 || auxiliary;
     const points = d.series[0]?.points || [];
     const slider = $('graph-slider'); slider.max = String(Math.max(0, points.length - 1));
@@ -191,7 +203,7 @@
     const anomaly = d.anomaly_series?.[index];
     if (!state.anomalyHidden && anomaly) out.append(node('span', 'series-anomaly', `Общая динамика: ${anomaly.score === null ? 'нет оценки' : anomaly.score + '/100'} · ${anomaly.score_source_label}`));
     const limit = d.limit_series?.[index];
-    if (!state.limitHidden && limit) out.append(node('span', 'series-limit', `Расход лимита: ${limit.used_percent === null ? 'нет измерения' : n(limit.used_percent) + '% · максимум ' + limit.profile_label}`));
+    if (!state.limitHidden && limit) out.append(node('span', 'series-limit', `Темп лимита: ${limit.rate_percent_per_hour === null ? 'нет оценки' : '≈' + n(limit.rate_percent_per_hour) + '%/ч · максимум ' + limit.profile_label}`));
     $('graph-inspector').replaceChildren(out);
     const g = state.geometry;
     const x = g.left + (((p.start + p.end) / 2) - d.window_start) / (d.window_end - d.window_start) * (g.right - g.left);
@@ -210,7 +222,7 @@
   function paint() {
     paintAnomaly(); paintCards(); paintLegend(); paintPlot(); paintTable();
     const d = state.data;
-    $('graph-step').textContent = `${metrics[state.metric]} · токенов в минуту · шаг ${d.bucket_seconds / 60} мин · красная динамика и чёрный расход лимита по правой шкале 0–100`;
+    $('graph-step').textContent = `${metrics[state.metric]} · токенов в минуту · шаг ${d.bucket_seconds / 60} мин · чёрный темп лимита — live-прогноз %/ч по окну 30–120 минут`;
     $('graph-updated').textContent = `Снимок: ${date(d.window_end)}`;
     $('graph-demo').hidden = !d.demo;
     const bad = d.series.reduce((n, s) => n + s.conflicts + s.invalid + s.unknown_source_time, 0);
