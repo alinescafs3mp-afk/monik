@@ -1,8 +1,8 @@
-"""Bounded time series over monik's own canonical response records.
+"""Bounded time series over monik's own canonical observations.
 
-No source reads, model calls or provider-limit arithmetic. Timestamps on the X
+No source reads, model calls or token-to-quota conversion. Timestamps on the X
 axis are source event times; evidence is bounded by the observation horizon.
-Empty buckets are unknown, not proof that Codex consumed zero tokens.
+Empty token and limit buckets are unknown, not proof of zero consumption.
 """
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ METRICS = FIELDS + ('uncached_input_tokens',)
 MAX_TIMESTAMP = 32_503_680_000
 ANOMALY_BUCKET_SECONDS = 15 * 60
 ANOMALY_BASELINE_BUCKETS = 24
+LIMIT_STALE_SECONDS = 120
+LIMIT_LOOKBACK_SECONDS = 7 * 24 * 3600
 
 
 def _anomaly_summary(label: str, buckets: dict[int, dict]) -> dict[str, Any]:
@@ -205,6 +207,55 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
             WHERE e.event_at>=? AND e.event_at<? AND e.ingested_at<=?
               AND e.profile IN ({marks})
             ORDER BY e.profile,e.event_at''',(end,anomaly_start,end,end,*names)).fetchall()
+        requested=','.join('(?)' for _ in names)
+        limit_rows=db.execute(f'''WITH requested(profile) AS (VALUES {requested}),
+            window_limits AS MATERIALIZED (
+                SELECT e.profile,e.event_at,e.time,e.id,
+                  CAST(json_extract(e.data,'$.used_percent') AS REAL) AS used_percent
+                FROM events e JOIN requested r ON r.profile=e.profile
+                WHERE e.kind='limit' AND e.event_at IS NOT NULL
+                  AND e.time>=? AND e.time<? AND e.ingested_at<=?
+                  AND json_extract(e.data,'$.limit_id')='codex'
+                  AND json_extract(e.data,'$.role')='primary'
+                  AND json_extract(e.data,'$.valid')=1
+                  AND json_type(e.data,'$.used_percent') IN ('integer','real')
+                  AND json_extract(e.data,'$.used_percent') BETWEEN 0 AND 100
+                  AND NOT EXISTS(SELECT 1 FROM events c INDEXED BY events_conflict_uid
+                    WHERE c.kind='conflict'
+                      AND json_extract(c.data,'$.canonical_uid')=e.uid
+                      AND c.ingested_at<=?)
+            ), slotted AS (
+                SELECT *,CAST((event_at-?)/? AS INTEGER) AS slot
+                FROM window_limits WHERE event_at>=? AND event_at<?
+            ), bucketed AS (
+                SELECT 'bucket' AS scope,profile,slot,event_at,used_percent,
+                  row_number() OVER(PARTITION BY profile,slot ORDER BY event_at DESC,id DESC) AS rn
+                FROM slotted
+            ), latest_ids AS (
+                SELECT r.profile,(SELECT e.id FROM events e INDEXED BY events_profile_time
+                    WHERE e.profile=r.profile AND e.kind='limit' AND e.event_at IS NOT NULL
+                      AND e.time>=? AND e.time<? AND e.ingested_at<=?
+                      AND json_extract(e.data,'$.limit_id')='codex'
+                      AND json_extract(e.data,'$.role')='primary'
+                      AND json_extract(e.data,'$.valid')=1
+                      AND json_type(e.data,'$.used_percent') IN ('integer','real')
+                      AND json_extract(e.data,'$.used_percent') BETWEEN 0 AND 100
+                      AND NOT EXISTS(SELECT 1 FROM events c INDEXED BY events_conflict_uid
+                        WHERE c.kind='conflict'
+                          AND json_extract(c.data,'$.canonical_uid')=e.uid
+                          AND c.ingested_at<=?)
+                    ORDER BY e.time DESC,e.id DESC LIMIT 1) AS id
+                FROM requested r
+            ), latest AS (
+                SELECT 'latest' AS scope,e.profile,-1 AS slot,e.event_at,
+                  CAST(json_extract(e.data,'$.used_percent') AS REAL) AS used_percent
+                FROM latest_ids l JOIN events e ON e.id=l.id
+            )
+            SELECT scope,profile,slot,event_at,used_percent FROM bucketed WHERE rn=1
+            UNION ALL
+            SELECT scope,profile,slot,event_at,used_percent FROM latest''',
+            (*names,start,end,end,end,first,step,start,end,
+             max(0,end-LIMIT_LOOKBACK_SECONDS),end,end,end)).fetchall()
     indexed = {(r['profile'], r['slot']): dict(r) for r in rows}
     series = []
     for definition in selected:
@@ -244,10 +295,42 @@ def usage_series(store, profiles: list[dict], *, hours: int = 6,
         anomaly_series.append({'start':left,'end':right,'partial':right-left<step,
             'score':sample['score'],'level':sample['level'],'confidence':sample['score_confidence'],
             'score_source':sample['score_source'],'score_source_label':sample['score_source_label']})
+    labels={definition['name']:definition.get('label') or
+            {'astra':'Astra','sol':'Sol'}.get(definition['name'],definition['name'])
+            for definition in selected}
+    latest_index={row['profile']:dict(row) for row in limit_rows if row['scope']=='latest'}
+    limit_latest=[]
+    for definition in selected:
+        name=definition['name'];row=latest_index.get(name)
+        event_at=row['event_at'] if row is not None else None
+        age=max(0,end-event_at) if event_at is not None else None
+        limit_latest.append({'profile':name,'label':labels[name],
+            'used_percent':row['used_percent'] if row is not None else None,
+            'event_at':event_at,'age_seconds':age,
+            'stale':age>LIMIT_STALE_SECONDS if age is not None else None})
+    limit_index={(row['profile'],row['slot']):dict(row)
+                 for row in limit_rows if row['scope']=='bucket'}
+    limit_series=[]
+    for i in range(count):
+        left,right=max(start,first+i*step),min(end,first+(i+1)*step)
+        observed=[limit_index[(name,i)] for name in names if (name,i) in limit_index]
+        winner=max(observed,key=lambda row:row['used_percent'],default=None)
+        limit_series.append({'start':left,'end':right,'partial':right-left<step,
+            'used_percent':winner['used_percent'] if winner is not None else None,
+            'profile':winner['profile'] if winner is not None else None,
+            'profile_label':labels[winner['profile']] if winner is not None else None,
+            'measured_profiles':len(observed),
+            'profiles':{row['profile']:row['used_percent'] for row in observed}})
     return {'schema_version': 1, 'hours': hours, 'window_start': start, 'window_end': end,
             'bucket_seconds': step, 'cursor': cursor, 'generated_at': clock,
             'mode': 'historical' if at is not None else 'live', 'series': series,
             'anomaly':_anomaly_at(anomaly_index,selected,end),'anomaly_series':anomaly_series,
+            'limit':{'latest':limit_latest,'aggregation':'maximum_observed_profile_percent',
+                'scope':'account-wide codex primary limit for each configured profile',
+                'unknown_policy':'missing snapshots do not become zero; percentages are never summed',
+                'stale_after_seconds':LIMIT_STALE_SECONDS,
+                'latest_lookback_seconds':LIMIT_LOOKBACK_SECONDS},
+            'limit_series':limit_series,
             'coverage': 'partial', 'time_basis': 'source_event_time',
             'knowledge_at': end, 'empty_bucket': 'unknown_not_zero',
             'rate_formula': 'bucket_metric * 60 / bucket_seconds; partial buckets not extrapolated',

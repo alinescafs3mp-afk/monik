@@ -35,6 +35,18 @@ class Series(unittest.TestCase):
             for event in normalize(row, profile, thread, delivery):
                 self.store.put(db, event, {'source': 'synthetic', 'delivery': delivery, 'ingested_at': ingested})
 
+    def put_limit(self, used, profile='astra', at=NOW-100, ingested=NOW-90,
+                  delivery=None, thread='root', limit_id='codex', role='primary'):
+        delivery = delivery or f'limit:{profile}:{at}:{used}'
+        row = {'type': 'event_msg', 'timestamp': at, 'payload': {
+            'type': 'token_count', 'thread_id': thread, 'rate_limits': {'rateLimits': {
+                'limitId': limit_id, role: {'usedPercent': used,
+                    'windowDurationMins': 10080, 'resetsAt': NOW+86400}}}}}
+        with self.store.connect(write=True) as db:
+            for event in normalize(row, profile, thread, delivery):
+                self.store.put(db, event, {'source': 'synthetic-limit',
+                    'delivery': delivery, 'ingested_at': ingested})
+
     def series(self, **kwargs):
         return usage_series(self.store, copy.deepcopy(PROFILES), now=NOW, **kwargs)
 
@@ -139,7 +151,7 @@ class Series(unittest.TestCase):
             observed=[];db.set_trace_callback(observed.append)
             data=usage_series(self.store, PROFILES, now=NOW)
         self.assertEqual(self.store.sequence(),before);self.assertEqual(PROFILES,definitions)
-        self.assertEqual(len(observed),4)
+        self.assertEqual(len(observed),5)
         self.assertFalse(any(s.lstrip().upper().startswith(('INSERT','UPDATE','DELETE')) for s in observed))
         self.assertNotIn('raw_sha256',json.dumps(data));self.assertNotIn('payload',json.dumps(data))
 
@@ -149,6 +161,48 @@ class Series(unittest.TestCase):
         data=self.series()
         self.assertTrue(all(s['responses']==0 for s in data['series']))
         self.assertEqual(data['cursor'],self.store.sequence())
+
+    def test_limit_percentages_and_line_use_maximum_not_sum(self):
+        self.put_limit(80, profile='astra', at=NOW-500, ingested=NOW-499)
+        self.put_limit(40, profile='sol', at=NOW-490, ingested=NOW-489)
+        self.put_limit(60, profile='sol', at=NOW-100, ingested=NOW-99)
+        data=self.series()
+        latest={item['profile']:item for item in data['limit']['latest']}
+        self.assertEqual(latest['astra']['used_percent'],80)
+        self.assertTrue(latest['astra']['stale'])
+        self.assertEqual(latest['sol']['used_percent'],60)
+        self.assertFalse(latest['sol']['stale'])
+        measured=[point for point in data['limit_series'] if point['used_percent'] is not None]
+        self.assertEqual([point['used_percent'] for point in measured],[80,60])
+        self.assertEqual(measured[0]['measured_profiles'],2)
+        self.assertEqual(measured[0]['profile'],'astra')
+        self.assertEqual(data['limit']['aggregation'],'maximum_observed_profile_percent')
+        self.assertEqual(data['limit']['latest_lookback_seconds'],7*24*3600)
+        self.assertNotIn(120,[point['used_percent'] for point in measured])
+
+    def test_limit_history_respects_knowledge_horizon_and_unknown_is_not_zero(self):
+        self.put_limit(72, at=NOW-100, ingested=NOW-10)
+        historical=self.series(at=NOW-20)
+        self.assertIsNone(historical['limit']['latest'][0]['used_percent'])
+        self.assertTrue(all(point['used_percent'] is None for point in historical['limit_series']))
+        self.assertEqual(self.series()['limit']['latest'][0]['used_percent'],72)
+
+    def test_limit_line_omits_side_quotas_secondary_and_disputed_values(self):
+        self.put_limit(30, delivery='account')
+        self.put_limit(99, delivery='model', limit_id='codex_bengalfox')
+        self.put_limit(95, delivery='secondary', role='secondary')
+        self.put_limit(80, delivery='account', ingested=NOW-20)
+        self.assertIsNone(self.series()['limit']['latest'][0]['used_percent'])
+        earlier=self.series(at=NOW-30)
+        self.assertEqual(earlier['limit']['latest'][0]['used_percent'],30)
+        self.assertNotIn(99,[p['used_percent'] for p in earlier['limit_series']])
+
+    def test_limit_profile_filter_is_preserved(self):
+        self.put_limit(25, profile='astra')
+        self.put_limit(55, profile='sol')
+        data=self.series(profile='sol')
+        self.assertEqual([item['profile'] for item in data['limit']['latest']],['sol'])
+        self.assertEqual({p['profile'] for p in data['limit_series'] if p['profile']},{'sol'})
 
     def anomaly_baseline(self, *, recent_multiplier=1, recent_responses=1):
         start=NOW-(6*3600+15*60)
@@ -256,6 +310,9 @@ class API(unittest.TestCase):
         page=self.client.get('/token-graph').text
         script=self.client.get('/token-graph.js').text
         self.assertIn('graph-anomaly',page);self.assertIn('paintAnomaly',script);self.assertIn('anomaly_series',script)
+        self.assertIn('limit_series',script);self.assertIn('series-limit',script)
+        self.login();payload=self.client.get('/api/v1/usage-series').json()
+        self.assertIn('limit',payload);self.assertIn('limit_series',payload)
         self.login();self.assertEqual(self.client.post('/api/v1/usage-series',json={}).status_code,405)
 
     def test_fixed_time_is_valid_and_future_is_rejected(self):

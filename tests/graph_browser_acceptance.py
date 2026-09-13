@@ -52,11 +52,20 @@ def main():
                 'usage':{'input_tokens':amount,'cached_input_tokens':amount//2,'output_tokens':amount//10,
                          'reasoning_output_tokens':amount//30,'total_tokens':amount+amount//10}}},profile,profile+'-synthetic',str(i))[0]
             with store.connect(write=True) as db:store.put(db,event,{'source':'synthetic-graph','delivery':str(i),'ingested_at':at+1})
+        def record_limit(i,profile,at,used):
+            delivery=f'limit-{profile}-{i}'
+            events=normalize({'timestamp':at,'type':'event_msg','payload':{
+                'type':'token_count','thread_id':profile+'-synthetic','rate_limits':{'rateLimits':{
+                    'limitId':'codex','primary':{'usedPercent':used,'windowDurationMins':10080,
+                                                'resetsAt':end+86400}}}}},profile,profile+'-synthetic',delivery)
+            with store.connect(write=True) as db:
+                for event in events:store.put(db,event,{'source':'synthetic-limit','delivery':delivery,'ingested_at':at+1})
         for j,profile in enumerate(('astra','sol')):
             for i in range(144):
                 if i in (50,51,99):continue
                 amount=int(8000+9000*(1+math.sin(i*.28+j))+(50000 if i in (90,120-j*7) else 0))
                 record(f'{profile}-{i}',profile,anchor-(144-i)*300+90,amount)
+            for i in range(12):record_limit(i,profile,anchor-(12-i)*300+90,32+j*9+i)
         server=uvicorn.Server(uvicorn.Config(app,log_level='error',access_log=False))
         thread=threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True);thread.start()
         for _ in range(100):
@@ -101,9 +110,12 @@ def main():
                 check('two_profile_cards',page.locator('#graph-cards h2').count()==2)
                 check('anomaly_index_visible',page.locator('#graph-anomaly-value').inner_text()!='—')
                 check('anomaly_profile_breakdown',page.locator('#graph-anomaly-profiles .anomaly-profile').count()==2)
+                check('profile_limit_percentages',page.locator('#graph-anomaly-profiles .anomaly-profile-limit').count()==2 and '%' in page.locator('#graph-anomaly-profiles').inner_text())
                 check('anomaly_meter_bounded',0<=int(page.locator('#graph-anomaly-value').inner_text())<=100)
                 check('historical_anomaly_line',page.locator('#graph-svg .graph-anomaly-history').count()>0)
-                check('three_graph_rows',page.locator('#graph-legend button').count()==3)
+                check('historical_limit_line',page.locator('#graph-svg .graph-limit-history').count()>0)
+                check('limit_line_is_black',page.locator('#graph-svg .graph-limit-history').first.evaluate("e=>getComputedStyle(e).stroke")=='rgb(5, 5, 5)')
+                check('four_graph_rows',page.locator('#graph-legend button').count()==4)
                 check('actual_svg_points',page.locator('#graph-svg .graph-dot').count()>20)
                 check('demo_badge',page.locator('#graph-demo').is_visible())
                 for hours in (24,12,6,3,2,1):
